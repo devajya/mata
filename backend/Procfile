@@ -1,0 +1,4 @@
+# AGENT-CTX: Railway reads this file to determine the start command.
+# PORT is injected by Railway at runtime — do not hardcode it.
+# Run from the backend/ project root so `backend` package is on sys.path.
+web: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
