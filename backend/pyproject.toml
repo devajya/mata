@@ -29,6 +29,23 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# AGENT-CTX: Filter out FutureWarning from google-generativeai (deprecated package).
+# The warning fires on every test run but is not actionable until we migrate to google-genai.
+# Remove this filter after migrating to google-genai.
+# AGENT-CTX: Suppress FutureWarning from deprecated google-generativeai package.
+# Warning fires on import and is not actionable. Remove after migrating to google-genai.
+# "ignore::FutureWarning" (no module filter) because pytest attributes the warning to
+# our import site (backend/llm.py) not the google module that issues it.
+filterwarnings = [
+    "ignore::FutureWarning",
+]
+# AGENT-CTX: `live` marker gates tests that hit real PubMed + Gemini APIs.
+# Default pytest run skips them (they are not in the default marker set).
+# Run live tests with: pytest -m live
+# Skip live tests with: pytest -m "not live"  (default in CI)
+markers = [
+    "live: hits real external APIs (PubMed, Gemini). Requires valid API keys and quota.",
+]
 
 [build-system]
 requires = ["hatchling"]

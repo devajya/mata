@@ -1,15 +1,20 @@
 """
-Test stubs for backend.llm.classify_evidence_type.
+Tests for backend.llm.classify_evidence_type.
 
-AGENT-CTX: These tests are RED by design (T1 — scaffold phase).
-They will ERROR with NotImplementedError until T3 implements classify_evidence_type.
-Tests marked with [LIVE] require a valid GOOGLE_API_KEY env var.
+AGENT-CTX: All tests here are marked @pytest.mark.live — they call the real Gemini API.
+They require GOOGLE_API_KEY in env and available daily quota (20 RPD for gemini-2.5-flash free tier).
+Run with: pytest -m live
+Skip with: pytest -m "not live"  (default, used in CI without API key)
+
+AGENT-CTX: These tests verify the classification logic accuracy and error handling.
+They are NOT in the default test run to avoid burning free-tier quota during CI.
 """
 
 import pytest
 from backend.llm import classify_evidence_type, VALID_EVIDENCE_TYPES
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_classify_clinical_trial():
     """
@@ -29,6 +34,7 @@ async def test_classify_clinical_trial():
     # in integration/eval tests, not in the unit suite. Unit test only checks shape.
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_classify_returns_valid_type_for_animal_model():
     """[LIVE] — model should classify mouse study correctly."""
@@ -42,6 +48,7 @@ async def test_classify_returns_valid_type_for_animal_model():
     assert result in VALID_EVIDENCE_TYPES
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_classify_always_returns_member_of_valid_set():
     """
@@ -56,6 +63,7 @@ async def test_classify_always_returns_member_of_valid_set():
     assert result in VALID_EVIDENCE_TYPES
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_classify_handles_empty_abstract():
     """
