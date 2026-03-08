@@ -2,7 +2,7 @@
 FastAPI application entry point.
 
 AGENT-CTX: Stateless by design for this slice — no DB, no session store.
-All state lives in PubMed and the LLM. Safe to scale horizontally on Railway.
+All state lives in PubMed and the LLM. Safe to scale horizontally on Render.
 """
 
 import asyncio
@@ -37,8 +37,8 @@ app.add_middleware(
 
 @app.get("/health")
 async def health() -> dict:
-    # AGENT-CTX: Railway health check hits this endpoint.
-    # Must return HTTP 200 or Railway restarts the container.
+    # AGENT-CTX: Render health check hits this endpoint (configured in render.yaml).
+    # Must return HTTP 200 or Render marks the deploy as failed.
     # Keep this handler dependency-free so it never fails.
     return {"status": "ok"}
 

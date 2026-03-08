@@ -1,0 +1,46 @@
+# AGENT-CTX: Render infrastructure-as-code config. Render reads this from the repo root.
+# Docs: https://render.com/docs/infrastructure-as-code
+# To change any setting here, edit this file and push — Render picks it up on next deploy.
+
+services:
+  - type: web
+    name: mata-backend
+    runtime: python
+
+    # AGENT-CTX: rootDir scopes all build/start commands to the backend/ subdirectory.
+    # Without this, `pip install .` would run from the repo root (no pyproject.toml there)
+    # and uvicorn would not find the `backend` package on sys.path.
+    rootDir: backend
+
+    # AGENT-CTX: pip install . installs from backend/pyproject.toml (main deps only, not dev).
+    # dev extras (pytest etc.) are intentionally excluded from production builds.
+    buildCommand: pip install .
+
+    # AGENT-CTX: Must match the Procfile command. $PORT is injected by Render at runtime.
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+
+    # AGENT-CTX: Render free tier. No cost, but the service spins down after 15 minutes
+    # of inactivity. First request after spin-down has a ~30s cold start delay.
+    # Upgrade to "starter" plan to keep the service always-on.
+    plan: free
+
+    # AGENT-CTX: Render pings this path every 30s to confirm the service is healthy.
+    # Must return HTTP 200. Our /health endpoint is deliberately dependency-free.
+    healthCheckPath: /health
+
+    envVars:
+      # AGENT-CTX: sync:false means Render will NOT read this value from render.yaml.
+      # You must set it manually in the Render dashboard (Environment tab).
+      # This prevents secrets from being committed to the repo.
+      - key: GROQ_API_KEY
+        sync: false
+
+      # AGENT-CTX: Optional — NCBI API key increases PubMed rate limit from 3 to 10 req/s.
+      # Leave unset if you don't have one; the app works without it.
+      - key: NCBI_API_KEY
+        sync: false
+
+      # AGENT-CTX: Set this to the Vercel frontend URL after T8 completes (e.g. https://mata.vercel.app).
+      # Defaults to "*" (allow all origins) when unset — acceptable until frontend URL is known.
+      - key: ALLOWED_ORIGINS
+        sync: false
