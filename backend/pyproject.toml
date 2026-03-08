@@ -6,10 +6,10 @@ version = "0.1.0"
 # on Railway if needed — Railway supports 3.11 via nixpacks.
 requires-python = ">=3.10"
 dependencies = [
-    # AGENT-CTX: google-generativeai chosen over google-genai (newer unified SDK)
-    # because it has broader documentation coverage and stable Gemini Flash support.
-    # If migrating to google-genai, update imports in llm.py (from google import genai).
-    "google-generativeai>=0.7.0",
+    # AGENT-CTX: groq SDK chosen over google-generativeai.
+    # Reasons: 30 RPM / 6000 RPD free tier (vs Gemini 5 RPM / 20 RPD), OpenAI-compatible
+    # chat completions API, no gRPC complexity, straightforward async-via-thread pattern.
+    "groq>=1.0.0",
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.30.0",
     # AGENT-CTX: httpx is used for async PubMed HTTP calls and as the ASGI test client.
@@ -32,13 +32,7 @@ testpaths = ["tests"]
 # AGENT-CTX: Filter out FutureWarning from google-generativeai (deprecated package).
 # The warning fires on every test run but is not actionable until we migrate to google-genai.
 # Remove this filter after migrating to google-genai.
-# AGENT-CTX: Suppress FutureWarning from deprecated google-generativeai package.
-# Warning fires on import and is not actionable. Remove after migrating to google-genai.
-# "ignore::FutureWarning" (no module filter) because pytest attributes the warning to
-# our import site (backend/llm.py) not the google module that issues it.
-filterwarnings = [
-    "ignore::FutureWarning",
-]
+filterwarnings = []
 # AGENT-CTX: `live` marker gates tests that hit real PubMed + Gemini APIs.
 # Default pytest run skips them (they are not in the default marker set).
 # Run live tests with: pytest -m live
