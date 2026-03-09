@@ -29,6 +29,7 @@ Fallback on unrecognised output: "review" — least specific, never factually wr
 import asyncio
 import os
 
+import httpx
 from groq import Groq
 from groq import APIError as GroqAPIError
 from groq import RateLimitError as GroqRateLimitError
@@ -72,6 +73,13 @@ Title: {title}
 Abstract: {abstract}
 
 Classify the evidence type."""
+
+# AGENT-CTX: LLM_PROVIDER selects the backend: "groq" (default, cloud) or "ollama" (local).
+# When "ollama", OLLAMA_BASE_URL points at the Ollama server (default: localhost:11434).
+# The Groq SDK appends /openai/v1/ to its base URL, which Ollama does not serve;
+# the ollama path uses httpx directly against Ollama's /v1/ endpoint instead.
+_LLM_PROVIDER: str = os.environ.get("LLM_PROVIDER", "groq").lower()
+_OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # AGENT-CTX: Module-level client, lazily initialised on first call (see _get_client()).
 # None until GROQ_API_KEY is available. Do not initialise at import time — the key
@@ -124,14 +132,17 @@ async def classify_evidence_type(title: str, abstract: str) -> EvidenceType:
     Both invariants are relied upon by asyncio.gather() in main.py — a single raise
     cancels all in-flight tasks for that request.
     """
-    client = _get_client()
-
     prompt = _PROMPT_TEMPLATE.format(
         title=title or "(no title)",
         # AGENT-CTX: Explicit marker for absent abstract — tells the model the field is
         # intentionally empty, not accidentally omitted. Improves title-only classification.
         abstract=abstract if abstract else "(no abstract available)",
     )
+
+    if _LLM_PROVIDER == "ollama":
+        return await _classify_via_ollama(prompt)
+
+    client = _get_client()
 
     try:
         # AGENT-CTX: asyncio.to_thread() runs the synchronous Groq client call in a
@@ -163,6 +174,34 @@ async def classify_evidence_type(title: str, abstract: str) -> EvidenceType:
         raise RuntimeError(f"Unexpected error calling Groq: {e}") from e
 
     raw = completion.choices[0].message.content or ""
+    return _parse_label(raw)
+
+
+async def _classify_via_ollama(prompt: str) -> EvidenceType:
+    """
+    Call Ollama's OpenAI-compatible /v1/chat/completions endpoint directly via httpx.
+
+    AGENT-CTX: The Groq SDK hardcodes /openai/v1/ as its resource path prefix, which
+    Ollama does not serve (Ollama uses /v1/). Using httpx directly avoids this mismatch.
+    OLLAMA_BASE_URL + /v1/chat/completions is the correct Ollama endpoint.
+    """
+    url = f"{_OLLAMA_BASE_URL}/v1/chat/completions"
+    payload = {
+        "model": _GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": 10,
+        "temperature": 0,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"] or ""
+    except Exception as e:
+        raise RuntimeError(f"Ollama request failed: {e}") from e
     return _parse_label(raw)
 
 

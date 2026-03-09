@@ -8,8 +8,8 @@ FRONTEND := frontend
 
 .PHONY: help \
         install \
-        test test-live \
-        dev \
+        test test-local test-live test-e2e \
+        dev dev-local \
         frontend-install frontend-test frontend-dev
 
 # ── Help ───────────────────────────────────────────────────────────────────────
@@ -21,11 +21,15 @@ help:
 	@echo "  make install        Install backend + frontend deps"
 	@echo ""
 	@echo "  make test           Run backend tests (NO live API calls) ← default"
-	@echo "  make test-live      Run backend tests that hit real APIs"
+	@echo "  make test-local     Run ALL backend tests using local Ollama (no Groq tokens)"
+	@echo "                      Requires: ollama serve + llama-3.1-8b-instant alias"
+	@echo "  make test-live      Run live backend tests against real Groq + PubMed APIs"
 	@echo "                      (requires GROQ_API_KEY + NCBI_API_KEY in backend/.env)"
+	@echo "  make test-e2e       [T9] Smoke test against deployed Vercel + Render + Groq"
 	@echo ""
-	@echo "  make dev            Start backend dev server on :8000 (hot-reload)"
-	@echo "  make frontend-dev   Start frontend dev server on :3000"
+	@echo "  make dev            Start backend (:8000) + frontend (:3000) using Groq"
+	@echo "  make dev-local      Start backend (:8000) + frontend (:3000) using local Ollama"
+	@echo "  make frontend-dev   Start frontend dev server on :3000 only"
 	@echo ""
 	@echo "  make frontend-test  Run frontend jest tests"
 	@echo "─────────────────────────────────────────────"
@@ -46,10 +50,21 @@ frontend-install:
 # AGENT-CTX: `make test` is the STANDARD test command for this project.
 # It ALWAYS runs with -m "not live" so it never touches real APIs.
 # Use this in CI, pre-commit hooks, and local development by default.
-# Only use `make test-live` when you explicitly want to verify live API behaviour.
+# Only use `make test-local` or `make test-live` when you need live API behaviour.
 test:
 	@cd $(BACKEND) && set -a && . .env && set +a && \
 		.venv/bin/python -m pytest -m "not live" -v
+
+# AGENT-CTX: `make test-local` runs the full test suite (including @live tests)
+# with Groq redirected to local Ollama. No Groq tokens consumed.
+# Requires Ollama running with llama-3.1-8b-instant alias:
+#   ollama serve
+#   echo "FROM llama3.1:8b" | ollama create llama-3.1-8b-instant -f -
+# .env is loaded first for NCBI_API_KEY etc., then .env.local overrides GROQ_* vars.
+test-local:
+	@cd $(BACKEND) && set -a && . .env && . .env.local && set +a && \
+		{ curl -sf "$$OLLAMA_BASE_URL/api/tags" > /dev/null || { echo "ERROR: Ollama not reachable at $$OLLAMA_BASE_URL. Is OLLAMA_HOST=0.0.0.0 set on Windows?"; exit 1; }; } && \
+		.venv/bin/python -m pytest -v
 
 # AGENT-CTX: `make test-live` hits real PubMed + Groq APIs.
 # Requires valid GROQ_API_KEY in backend/.env.
@@ -58,11 +73,32 @@ test-live:
 	@cd $(BACKEND) && set -a && . .env && set +a && \
 		.venv/bin/python -m pytest -m live -v
 
-# ── Backend dev server ─────────────────────────────────────────────────────────
+# AGENT-CTX: `make test-e2e` is a placeholder for T9 — smoke test against the
+# fully deployed stack (Vercel frontend → Render backend → Groq LLM).
+test-e2e:
+	@echo "TODO (T9): implement E2E smoke test against deployed Vercel + Render + Groq"
+	@exit 1
+
+# ── Dev servers ────────────────────────────────────────────────────────────────
 
 dev:
-	@cd $(BACKEND) && set -a && . .env && set +a && \
-		.venv/bin/uvicorn backend.main:app --reload --port 8000
+	@trap 'kill 0' INT TERM; \
+	(cd $(BACKEND) && set -a && . .env && set +a && \
+		.venv/bin/uvicorn backend.main:app --reload --port 8000) & \
+	(cd $(FRONTEND) && npm run dev) & \
+	wait
+
+# AGENT-CTX: `make dev-local` is identical to `make dev` but layers .env.local on top,
+# redirecting Groq SDK calls to local Ollama. No Groq tokens consumed during development.
+# Requires Ollama running: ollama serve
+dev-local:
+	@cd $(BACKEND) && set -a && . .env && . .env.local && set +a && \
+		{ curl -sf "$$OLLAMA_BASE_URL/api/tags" > /dev/null || { echo "ERROR: Ollama not reachable at $$OLLAMA_BASE_URL. Is OLLAMA_HOST=0.0.0.0 set on Windows?"; exit 1; }; }
+	@trap 'kill 0' INT TERM; \
+	(cd $(BACKEND) && set -a && . .env && . .env.local && set +a && \
+		.venv/bin/uvicorn backend.main:app --reload --port 8000) & \
+	(cd $(FRONTEND) && npm run dev) & \
+	wait
 
 # ── Frontend ───────────────────────────────────────────────────────────────────
 
