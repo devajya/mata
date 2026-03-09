@@ -3,6 +3,13 @@ FastAPI application entry point.
 
 AGENT-CTX: Stateless by design for this slice — no DB, no session store.
 All state lives in PubMed and the LLM. Safe to scale horizontally on Render.
+
+AGENT-CTX: Milestone 1 change — extract_structured_evidence() replaces the
+old classify_evidence_type(). The LLM now returns a StructuredEvidence object
+(four fields) instead of a bare string. The ConfidenceEngine converts that
+into a ConfidenceTier and all fields are assembled into EvidenceItem for the
+API response. See confidence.py for the scoring pipeline and llm.py for the
+extraction function.
 """
 
 import asyncio
@@ -11,15 +18,16 @@ import os
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.llm import classify_evidence_type
+from backend.confidence import ConfidenceEngine, SubjectTypeFactor
+from backend.llm import extract_structured_evidence
 from backend.models import EvidenceItem, ErrorResponse, SearchResponse  # noqa: F401
 from backend.pubmed import fetch_abstracts
 
 # AGENT-CTX: App-level metadata used by Render's auto-generated /docs page.
 app = FastAPI(
     title="MATA API",
-    version="0.1.0",
-    description="Drug target evidence aggregation — walking skeleton",
+    version="0.2.0",
+    description="Drug target evidence aggregation — structured evidence extraction",
 )
 
 # AGENT-CTX: CORS allows all origins during development/staging.
@@ -32,6 +40,18 @@ app.add_middleware(
     allow_origins=_allowed_origins,
     allow_methods=["GET"],
     allow_headers=["*"],
+)
+
+# AGENT-CTX: Module-level ConfidenceEngine instance, constructed once at startup.
+# Registers SubjectTypeFactor as the sole scoring signal for this slice.
+# To add future factors (SampleSizeFactor, StudyDesignFactor, etc.) extend this
+# chain — no other code needs to change. See confidence.py for the Factor protocol.
+# Not a singleton by pattern, but effectively singleton by placement here.
+# If the engine ever needs runtime reconfiguration (e.g. per-request weights),
+# move construction inside the search handler — the engine.score() call is cheap.
+_engine = (
+    ConfidenceEngine()
+    .register(SubjectTypeFactor())
 )
 
 
@@ -49,22 +69,22 @@ async def health() -> dict:
     responses={
         422: {"model": ErrorResponse, "description": "Missing or invalid query"},
         500: {"model": ErrorResponse, "description": "PubMed fetch failed"},
-        502: {"model": ErrorResponse, "description": "LLM classification failed"},
+        502: {"model": ErrorResponse, "description": "LLM extraction failed"},
     },
 )
 async def search(
     query: str = Query(..., min_length=1, description="Drug target name, e.g. 'KRAS G12C'"),
 ) -> SearchResponse:
     """
-    Search PubMed for evidence items related to a drug target and classify each abstract.
+    Search PubMed for evidence items related to a drug target and extract
+    structured evidence fields from each abstract.
 
-    Flow: esearch → efetch (PubMed) → asyncio.gather(classify × N) → SearchResponse
+    Flow: esearch → efetch (PubMed) → asyncio.gather(extract × N) → score → SearchResponse
     """
     # ── Step 1: Fetch abstracts from PubMed ───────────────────────────────────
     try:
-        # AGENT-CTX: limit=10 restores the original AC ("at least 10 abstracts").
-        # Was temporarily capped at 5 during development when using Gemini free tier (5 RPM).
-        # Groq free tier is 30 RPM — 10 concurrent classify calls are well within quota.
+        # AGENT-CTX: limit=10 matches the original AC ("at least 10 abstracts").
+        # Groq free tier is 30 RPM — 10 concurrent extraction calls are within quota.
         # Do NOT lower this below 10 without updating the AC and E2E test assertion.
         records = await fetch_abstracts(query, limit=10)
     except ValueError as e:
@@ -79,13 +99,13 @@ async def search(
 
     if not records:
         # AGENT-CTX: Valid query, zero PubMed results. Return empty list — not an error.
-        # Frontend renders "no results found" when results==[].
+        # Frontend renders "no results found" when results == [].
         return SearchResponse(query=query, results=[])
 
-    # ── Step 2: Classify all abstracts concurrently ───────────────────────────
-    # AGENT-CTX: asyncio.gather() runs all classify_evidence_type() calls concurrently.
-    # classify_evidence_type() uses asyncio.to_thread() internally (Groq SDK sync call),
-    # so each call dispatches to the thread pool executor.
+    # ── Step 2: Extract structured evidence from all abstracts concurrently ────
+    # AGENT-CTX: asyncio.gather() runs all extract_structured_evidence() calls
+    # concurrently. extract_structured_evidence() uses asyncio.to_thread() internally
+    # (Groq SDK sync call), so each call dispatches to the thread pool executor.
     # With limit=10 and Python's default pool (min(32, cpu+4) threads), 10 concurrent
     # calls are well within capacity and reduce total latency from ~20s to ~3-5s.
     # Groq free tier is 30 RPM — 10 concurrent calls are safe.
@@ -98,29 +118,42 @@ async def search(
     # to the caller — but the remaining in-flight tasks are NOT cancelled. They continue
     # running unobserved in the thread pool until they complete or fail silently.
     # For 10 short-lived Groq calls this is acceptable — they will finish within seconds
-    # and waste at most 9 quota tokens. If cancellation on first failure becomes
-    # important, replace gather() with individual create_task() calls and cancel them
-    # explicitly in the except block.
+    # and waste at most 9 quota tokens.
     try:
-        evidence_types = await asyncio.gather(
-            *[classify_evidence_type(r["title"], r["abstract"]) for r in records]
+        structured_results = await asyncio.gather(
+            *[extract_structured_evidence(r["title"], r["abstract"]) for r in records]
         )
     except RuntimeError as e:
-        # AGENT-CTX: RuntimeError from classify_evidence_type = Groq API failure.
+        # AGENT-CTX: RuntimeError from extract_structured_evidence = Groq API failure.
         # 502 (Bad Gateway) signals the LLM is the failing dependency, not us.
-        raise HTTPException(status_code=502, detail=f"LLM classification failed: {e}") from e
+        # Note: parse failures inside extract_structured_evidence return safe defaults
+        # rather than raising — only actual API errors reach this handler.
+        raise HTTPException(status_code=502, detail=f"LLM extraction failed: {e}") from e
 
-    # ── Step 3: Zip records with classifications and return ───────────────────
-    # AGENT-CTX: zip(records, evidence_types) is safe here because asyncio.gather()
-    # preserves order — evidence_types[i] corresponds to records[i].
+    # ── Step 3: Score confidence and assemble response items ──────────────────
+    # AGENT-CTX: zip(records, structured_results) is safe here because asyncio.gather()
+    # preserves input order — structured_results[i] corresponds to records[i].
+    #
+    # AGENT-CTX: _engine.score(structured) is synchronous and cheap (weighted average
+    # of factor scores). It runs in the event loop thread — no need for to_thread().
+    # The result is confidence_tier: ConfidenceTier ("high" | "medium" | "low").
     results = [
         EvidenceItem(
             pmid=record["pmid"],
             title=record["title"],
             abstract=record["abstract"],
-            evidence_type=et,
+            # AGENT-CTX: All four LLM-extracted fields copied directly from StructuredEvidence.
+            # No transformation — the Pydantic model already validated them.
+            evidence_type=structured.evidence_type,
+            effect_direction=structured.effect_direction,
+            model_organism=structured.model_organism,
+            sample_size=structured.sample_size,
+            # AGENT-CTX: confidence_tier is engine-derived, not LLM-extracted.
+            # _engine.score() applies the registered factor pipeline to produce
+            # a ConfidenceTier bucket. See confidence.py for scoring logic.
+            confidence_tier=_engine.score(structured),
         )
-        for record, et in zip(records, evidence_types)
+        for record, structured in zip(records, structured_results)
     ]
 
     return SearchResponse(query=query, results=results)

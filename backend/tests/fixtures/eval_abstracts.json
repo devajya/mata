@@ -1,0 +1,49 @@
+{
+  "_schema": {
+    "AGENT-CTX": "Hand-labelled evaluation fixture for extract_structured_evidence(). Each entry in 'entries' represents one PubMed abstract with ground-truth labels. The test harness in test_eval.py validates schema integrity (always) and runs live LLM extraction against these labels (pytest -m live only). See T5 in the task list for harness details.",
+
+    "entry_fields": {
+      "id":       "integer — unique identifier, 1-based, sequential",
+      "pmid":     "string or null — real PubMed ID if abstract is from PubMed, null for synthetic",
+      "title":    "string — paper title as it appears in PubMed",
+      "abstract": "string — full abstract text; empty string if no abstract available",
+      "expected": "object — ground-truth labels (see expected_fields below)"
+    },
+
+    "expected_fields": {
+      "evidence_type":    "one of: 'animal model' | 'human genetics' | 'clinical trial' | 'in vitro' | 'review'",
+      "effect_direction": "one of: 'supports' | 'contradicts' | 'neutral'",
+      "model_organism":   "string — organism name (e.g. 'mouse', 'rat') or 'not reported' if absent/not applicable",
+      "sample_size":      "string — as stated in abstract (e.g. 'n=345', '~200 patients') or 'not reported'"
+    },
+
+    "OMITTED_intentionally": {
+      "confidence_tier": "NOT in expected — it is derived deterministically by ConfidenceEngine from evidence_type. Tested separately in test_confidence.py. Including it here would duplicate the engine's responsibility and create a maintenance burden if tier thresholds are retuned."
+    },
+
+    "coverage_requirements_for_T11_deploy": {
+      "total_entries":          20,
+      "per_evidence_type":      "at least 2 of each: animal model, human genetics, clinical trial, in vitro, review",
+      "per_effect_direction":   "at least 1 of each: supports, contradicts, neutral",
+      "populated_model_organism": "at least 3 entries where model_organism != 'not reported'",
+      "populated_sample_size":    "at least 3 entries where sample_size != 'not reported'"
+    },
+
+    "human_sign_off_required": "User must review all 20 labels for scientific plausibility before T11 (deploy). The agent cannot verify biological accuracy — only schema conformance."
+  },
+
+  "entries": [
+    {
+      "id": 1,
+      "pmid": null,
+      "title": "Phase III trial of sotorasib versus docetaxel in KRAS G12C non-small cell lung cancer",
+      "abstract": "A randomised controlled trial enrolling 345 patients with KRAS G12C-mutated non-small cell lung cancer across 28 countries. Patients were randomised 2:1 to sotorasib 960 mg once daily or docetaxel 75 mg/m2 every 3 weeks. The primary endpoint of progression-free survival was significantly improved with sotorasib (median 5.6 vs 4.5 months; HR 0.66, 95% CI 0.51-0.86; p=0.002). Objective response rate was 28% versus 13%. Grade 3 or higher adverse events occurred in 33% of sotorasib patients versus 36% on docetaxel.",
+      "expected": {
+        "evidence_type":    "clinical trial",
+        "effect_direction": "supports",
+        "model_organism":   "not reported",
+        "sample_size":      "n=345"
+      }
+    }
+  ]
+}
