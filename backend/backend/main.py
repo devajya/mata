@@ -15,7 +15,7 @@ from backend.llm import classify_evidence_type
 from backend.models import EvidenceItem, ErrorResponse, SearchResponse  # noqa: F401
 from backend.pubmed import fetch_abstracts
 
-# AGENT-CTX: App-level metadata used by Railway's auto-generated /docs page.
+# AGENT-CTX: App-level metadata used by Render's auto-generated /docs page.
 app = FastAPI(
     title="MATA API",
     version="0.1.0",

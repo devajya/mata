@@ -3,7 +3,7 @@ name = "mata-backend"
 version = "0.1.0"
 # AGENT-CTX: Targeting 3.10 (system Python on dev machine). All syntax used
 # (list[T] generics, Literal, match) is available in 3.10+. Bump to 3.11
-# on Railway if needed — Railway supports 3.11 via nixpacks.
+# on Render if needed — Render supports 3.11 via nixpacks.
 requires-python = ">=3.10"
 dependencies = [
     # AGENT-CTX: groq SDK chosen over google-generativeai.
