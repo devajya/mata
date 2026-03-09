@@ -29,16 +29,13 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-# AGENT-CTX: Filter out FutureWarning from google-generativeai (deprecated package).
-# The warning fires on every test run but is not actionable until we migrate to google-genai.
-# Remove this filter after migrating to google-genai.
 filterwarnings = []
-# AGENT-CTX: `live` marker gates tests that hit real PubMed + Gemini APIs.
-# Default pytest run skips them (they are not in the default marker set).
-# Run live tests with: pytest -m live
-# Skip live tests with: pytest -m "not live"  (default in CI)
+# AGENT-CTX: `live` — hits real PubMed + Groq APIs in-process (requires GROQ_API_KEY).
+# AGENT-CTX: `e2e`  — hits deployed Render + Vercel URLs over the network (no API key needed locally).
+# Default `make test` run excludes both markers. Only run them explicitly.
 markers = [
-    "live: hits real external APIs (PubMed, Gemini). Requires valid API keys and quota.",
+    "live: hits real PubMed + Groq APIs in-process. Requires GROQ_API_KEY and available quota.",
+    "e2e: smoke tests against deployed Render backend + Vercel frontend. Run with: make test-e2e",
 ]
 
 [build-system]

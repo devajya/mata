@@ -51,9 +51,11 @@ frontend-install:
 # It ALWAYS runs with -m "not live" so it never touches real APIs.
 # Use this in CI, pre-commit hooks, and local development by default.
 # Only use `make test-local` or `make test-live` when you need live API behaviour.
+# AGENT-CTX: Excludes both `live` (hits real Groq/PubMed) and `e2e` (hits deployed URLs).
+# This ensures `make test` is always fast, deterministic, and requires no network access.
 test:
 	@cd $(BACKEND) && set -a && . .env && set +a && \
-		.venv/bin/python -m pytest -m "not live" -v
+		.venv/bin/python -m pytest -m "not live and not e2e" -v
 
 # AGENT-CTX: `make test-local` runs the full test suite (including @live tests)
 # with Groq redirected to local Ollama. No Groq tokens consumed.
@@ -73,11 +75,15 @@ test-live:
 	@cd $(BACKEND) && set -a && . .env && set +a && \
 		.venv/bin/python -m pytest -m live -v
 
-# AGENT-CTX: `make test-e2e` is a placeholder for T9 — smoke test against the
-# fully deployed stack (Vercel frontend → Render backend → Groq LLM).
+# AGENT-CTX: `make test-e2e` runs smoke tests against the DEPLOYED stack.
+# Reads target URLs from backend/.env.e2e (no secrets — public URLs only).
+# Does NOT require GROQ_API_KEY locally — it calls the deployed Render service,
+# which uses its own GROQ_API_KEY set as a Render environment variable.
+# AGENT-CTX: Render free tier cold-starts in 30-60s — the 120s search timeout
+# in test_e2e.py accounts for this. The first run after idle may be slow.
 test-e2e:
-	@echo "TODO (T9): implement E2E smoke test against deployed Vercel + Render + Groq"
-	@exit 1
+	@cd $(BACKEND) && set -a && . .env.e2e && set +a && \
+		.venv/bin/python -m pytest -m e2e tests/test_e2e.py -v -s
 
 # ── Dev servers ────────────────────────────────────────────────────────────────
 

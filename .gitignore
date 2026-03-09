@@ -3,6 +3,8 @@
 .env.local
 .env.*.local
 .env.example
+# .env.e2e is intentionally NOT listed here — it contains only public deployment
+# URLs and no secrets, so it is safe (and expected) to commit.
 
 # Python
 __pycache__/
@@ -32,3 +34,6 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Session summaries (internal dev docs, not for repo)
+session_summaries/

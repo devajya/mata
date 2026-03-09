@@ -62,12 +62,11 @@ async def search(
     """
     # ── Step 1: Fetch abstracts from PubMed ───────────────────────────────────
     try:
-        # AGENT-CTX: limit=5 matches the free-tier RPM cap for gemini-2.5-flash (5 RPM).
-        # Firing 10 concurrent classify calls saturates the quota instantly.
-        # Raise this limit only after upgrading to a paid API key or switching to a
-        # higher-RPM model. The acceptance criterion is "at least 10 abstracts" —
-        # TODO (T6/paid tier): bump back to 10 once quota is not the bottleneck.
-        records = await fetch_abstracts(query, limit=5)
+        # AGENT-CTX: limit=10 restores the original AC ("at least 10 abstracts").
+        # Was temporarily capped at 5 during development when using Gemini free tier (5 RPM).
+        # Groq free tier is 30 RPM — 10 concurrent classify calls are well within quota.
+        # Do NOT lower this below 10 without updating the AC and E2E test assertion.
+        records = await fetch_abstracts(query, limit=10)
     except ValueError as e:
         # AGENT-CTX: ValueError means empty query, but FastAPI's Query(min_length=1)
         # should catch this before we get here. Mapped to 422 defensively in case
@@ -85,24 +84,29 @@ async def search(
 
     # ── Step 2: Classify all abstracts concurrently ───────────────────────────
     # AGENT-CTX: asyncio.gather() runs all classify_evidence_type() calls concurrently.
-    # classify_evidence_type() uses asyncio.to_thread() internally, so each call
-    # dispatches a blocking Gemini API call to the thread pool executor.
+    # classify_evidence_type() uses asyncio.to_thread() internally (Groq SDK sync call),
+    # so each call dispatches to the thread pool executor.
     # With limit=10 and Python's default pool (min(32, cpu+4) threads), 10 concurrent
-    # calls are well within capacity and reduce total latency from ~25s to ~3-5s.
+    # calls are well within capacity and reduce total latency from ~20s to ~3-5s.
+    # Groq free tier is 30 RPM — 10 concurrent calls are safe.
     #
-    # AGENT-CTX: If Gemini rate-limit errors appear in production (429), add a
+    # AGENT-CTX: If rate-limit errors (429) appear in production, add an
     # asyncio.Semaphore(N) here to cap concurrency. Do not add it now — premature
     # optimisation for a demo that makes ≤1 search/minute.
     #
-    # AGENT-CTX: gather() propagates the first RuntimeError and cancels remaining
-    # tasks. This is intentional — a partial result set is worse than a clean error
-    # message for the user at this stage.
+    # AGENT-CTX: When one coroutine raises, gather() immediately raises that exception
+    # to the caller — but the remaining in-flight tasks are NOT cancelled. They continue
+    # running unobserved in the thread pool until they complete or fail silently.
+    # For 10 short-lived Groq calls this is acceptable — they will finish within seconds
+    # and waste at most 9 quota tokens. If cancellation on first failure becomes
+    # important, replace gather() with individual create_task() calls and cancel them
+    # explicitly in the except block.
     try:
         evidence_types = await asyncio.gather(
             *[classify_evidence_type(r["title"], r["abstract"]) for r in records]
         )
     except RuntimeError as e:
-        # AGENT-CTX: RuntimeError from classify_evidence_type = Gemini API failure.
+        # AGENT-CTX: RuntimeError from classify_evidence_type = Groq API failure.
         # 502 (Bad Gateway) signals the LLM is the failing dependency, not us.
         raise HTTPException(status_code=502, detail=f"LLM classification failed: {e}") from e
 

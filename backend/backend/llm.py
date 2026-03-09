@@ -187,6 +187,11 @@ async def _classify_via_ollama(prompt: str) -> EvidenceType:
     """
     url = f"{_OLLAMA_BASE_URL}/v1/chat/completions"
     payload = {
+        # AGENT-CTX: Reuses _GROQ_MODEL ("llama-3.1-8b-instant") as the Ollama model name.
+        # This works because the setup instructions create an Ollama alias with the same name:
+        #   echo "FROM llama3.1:8b" | ollama create llama-3.1-8b-instant -f -
+        # If _GROQ_MODEL is ever changed to a Groq-specific model ID, introduce a separate
+        # _OLLAMA_MODEL constant here rather than reusing _GROQ_MODEL.
         "model": _GROQ_MODEL,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},

@@ -6,12 +6,12 @@ AGENT-CTX: Two tiers of tests:
   [MOCK] — patch fetch_abstracts + classify_evidence_type. No network. Always runnable.
            These cover endpoint wiring, error mapping, and response shape. Run in CI.
 
-  [LIVE]  — hit real PubMed + Gemini APIs. Require GOOGLE_API_KEY in env and available
-           quota. Skip with: pytest -m "not live"
+  [LIVE]  — hit real PubMed + Groq APIs. Require GROQ_API_KEY in env.
+           Skip with: pytest -m "not live"
            Run with: pytest -m live
 
 AGENT-CTX: The original AC said "tests pass with live OR mocked dependencies".
-Mock tests satisfy the AC without burning free-tier Gemini quota (20 RPD for gemini-2.5-flash).
+Mock tests satisfy the AC without burning free-tier Groq quota.
 Live tests provide additional confidence but are deliberately separated.
 
 Uses httpx.AsyncClient with ASGITransport (not app= shorthand, deprecated in httpx 0.24+).
@@ -31,15 +31,15 @@ VALID_EVIDENCE_TYPES = {
 
 # ── Shared mock data ──────────────────────────────────────────────────────────
 
-# AGENT-CTX: 5 records matches the current limit=5 in main.py search().
-# If limit is raised, update MOCK_RECORDS to match.
+# AGENT-CTX: 10 records matches limit=10 in main.py search() — restored to original AC.
+# If limit changes, update this list and the >=10 assertion in test_search_returns_200_with_mocked_deps.
 MOCK_RECORDS = [
     {
-        "pmid": f"1234567{i}",
+        "pmid": f"123456{i:02d}",
         "title": f"KRAS G12C study {i}",
         "abstract": f"Abstract text for study {i}.",
     }
-    for i in range(5)
+    for i in range(10)
 ]
 
 MOCK_EVIDENCE_TYPE = "clinical trial"
@@ -74,7 +74,9 @@ async def test_search_returns_200_with_mocked_deps():
     data = response.json()
 
     assert "results" in data
-    assert len(data["results"]) >= 5, f"Expected >=5 results, got {len(data['results'])}"
+    # AGENT-CTX: Assertion restored to >=10 — original AC value.
+    # limit=10 is set in main.py. If you lower limit, lower this assertion too.
+    assert len(data["results"]) >= 10, f"Expected >=10 results, got {len(data['results'])}"
 
     for item in data["results"]:
         assert "title" in item, f"Missing 'title' in {item}"
@@ -84,7 +86,7 @@ async def test_search_returns_200_with_mocked_deps():
         )
 
     # Verify wiring: fetch was called once with the query, classify was called per record.
-    mock_fetch.assert_called_once_with("KRAS G12C", limit=5)
+    mock_fetch.assert_called_once_with("KRAS G12C", limit=10)
     assert mock_classify.call_count == len(MOCK_RECORDS)
 
 
@@ -152,7 +154,7 @@ async def test_search_llm_failure_returns_502():
     AGENT-CTX: 502 (Bad Gateway) signals the LLM dependency failed, not our code.
     """
     with patch("backend.main.fetch_abstracts", return_value=MOCK_RECORDS), \
-         patch("backend.main.classify_evidence_type", side_effect=RuntimeError("Gemini down")):
+         patch("backend.main.classify_evidence_type", side_effect=RuntimeError("Groq down")):
 
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -208,12 +210,11 @@ async def test_health_endpoint():
 async def test_search_returns_200_with_results():
     """
     AC: /search returns list with title + evidence_type per item (live APIs).
-    [LIVE] — hits real PubMed + Gemini APIs. Requires GOOGLE_API_KEY + available quota.
+    [LIVE] — hits real PubMed + Groq APIs. Requires GROQ_API_KEY + available quota.
     Run with: pytest -m live
 
-    AGENT-CTX: KNOWN DEVIATION — returns >=5 results, not >=10.
-    The original AC required 10 abstracts. Lowered to 5 to stay within the free-tier
-    Gemini RPM cap (5 RPM for gemini-2.5-flash). Restore to 10 with a paid API key.
+    AGENT-CTX: Restored to >=10 results — original AC value.
+    Provider is Groq (30 RPM free tier) — 10 concurrent classify calls are within quota.
     """
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -223,7 +224,7 @@ async def test_search_returns_200_with_results():
     assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
     data = response.json()
     assert "results" in data
-    assert len(data["results"]) >= 5, f"Expected >=5 results, got {len(data['results'])}"
+    assert len(data["results"]) >= 10, f"Expected >=10 results, got {len(data['results'])}"
 
     for item in data["results"]:
         assert "title" in item
