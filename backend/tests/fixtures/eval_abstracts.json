@@ -1,0 +1,277 @@
+{
+  "_schema": {
+    "AGENT-CTX": "Hand-labelled evaluation fixture for extract_structured_evidence(). Each entry in 'entries' represents one PubMed abstract with ground-truth labels. The test harness in test_eval.py validates schema integrity (always) and runs live LLM extraction against these labels (pytest -m live only). See T5 in the task list for harness details.",
+
+    "entry_fields": {
+      "id":       "integer — unique identifier, 1-based, sequential",
+      "pmid":     "string or null — real PubMed ID if abstract is from PubMed, null for synthetic",
+      "title":    "string — paper title as it appears in PubMed",
+      "abstract": "string — full abstract text; empty string if no abstract available",
+      "expected": "object — ground-truth labels (see expected_fields below)"
+    },
+
+    "expected_fields": {
+      "evidence_type":    "one of: 'animal model' | 'human genetics' | 'clinical trial' | 'in vitro' | 'review'",
+      "effect_direction": "one of: 'supports' | 'contradicts' | 'neutral'",
+      "model_organism":   "string — organism name (e.g. 'mouse', 'rat') or 'not reported' if absent/not applicable",
+      "sample_size":      "string — as stated in abstract (e.g. 'n=345', '~200 patients') or 'not reported'"
+    },
+
+    "OMITTED_intentionally": {
+      "confidence_tier": "NOT in expected — it is derived deterministically by ConfidenceEngine from evidence_type. Tested separately in test_confidence.py. Including it here would duplicate the engine's responsibility and create a maintenance burden if tier thresholds are retuned."
+    },
+
+    "coverage_requirements_for_T11_deploy": {
+      "total_entries":          20,
+      "per_evidence_type":      "at least 2 of each: animal model, human genetics, clinical trial, in vitro, review",
+      "per_effect_direction":   "at least 1 of each: supports, contradicts, neutral",
+      "populated_model_organism": "at least 3 entries where model_organism != 'not reported'",
+      "populated_sample_size":    "at least 3 entries where sample_size != 'not reported'"
+    },
+
+    "human_sign_off_required": "User must review all 20 labels for scientific plausibility before T11 (deploy). The agent cannot verify biological accuracy — only schema conformance."
+  },
+
+  "entries": [
+    {
+      "id": 1,
+      "pmid": null,
+      "title": "Phase III trial of sotorasib versus docetaxel in KRAS G12C non-small cell lung cancer",
+      "abstract": "A randomised controlled trial enrolling 345 patients with KRAS G12C-mutated non-small cell lung cancer across 28 countries. Patients were randomised 2:1 to sotorasib 960 mg once daily or docetaxel 75 mg/m2 every 3 weeks. The primary endpoint of progression-free survival was significantly improved with sotorasib (median 5.6 vs 4.5 months; HR 0.66, 95% CI 0.51-0.86; p=0.002). Objective response rate was 28% versus 13%. Grade 3 or higher adverse events occurred in 33% of sotorasib patients versus 36% on docetaxel.",
+      "expected": {
+        "evidence_type":    "clinical trial",
+        "effect_direction": "supports",
+        "model_organism":   "not reported",
+        "sample_size":      "n=345"
+      }
+    },
+    {
+      "id": 2,
+      "pmid": null,
+      "title": "Randomised phase III trial of selumetinib plus docetaxel in KRAS-mutant advanced non-small cell lung cancer",
+      "abstract": "We conducted a randomised, double-blind, placebo-controlled phase III trial of selumetinib (AZD6244) combined with docetaxel in 487 patients with KRAS-mutant advanced non-small cell lung cancer who had progressed on first-line platinum-based chemotherapy. The addition of selumetinib to docetaxel did not significantly improve progression-free survival (3.9 vs 2.8 months; HR 0.93, 95% CI 0.77-1.12; p=0.44) or overall survival (8.7 vs 7.9 months; HR 0.91; p=0.33) compared with docetaxel plus placebo. Objective response rates were similar between arms (20% vs 17%). These results do not support selumetinib plus docetaxel as a treatment strategy for KRAS-mutant NSCLC.",
+      "expected": {
+        "evidence_type":    "clinical trial",
+        "effect_direction": "contradicts",
+        "model_organism":   "not reported",
+        "sample_size":      "n=487"
+      }
+    },
+    {
+      "id": 3,
+      "pmid": null,
+      "title": "Phase II study of adagrasib in previously treated KRAS G12C-mutated colorectal cancer",
+      "abstract": "In this single-arm phase II study, 112 patients with previously treated KRAS G12C-mutated metastatic colorectal cancer received adagrasib 600 mg twice daily. The primary endpoint was objective response rate as assessed by blinded central review. The confirmed objective response rate was 19.5% (95% CI 12.6-28.3%), with a median duration of response of 4.3 months. Median progression-free survival was 5.6 months and median overall survival was 19.8 months. These data support adagrasib as a clinically meaningful treatment option in this patient population.",
+      "expected": {
+        "evidence_type":    "clinical trial",
+        "effect_direction": "supports",
+        "model_organism":   "not reported",
+        "sample_size":      "n=112"
+      }
+    },
+    {
+      "id": 4,
+      "pmid": null,
+      "title": "Genome-wide association study identifies BRCA2 variants associated with pancreatic cancer risk",
+      "abstract": "We conducted a genome-wide association study in 14,846 pancreatic cancer cases and 11,683 controls of European ancestry. After imputation and quality control, we identified a genome-wide significant association at chromosome 13q12 near BRCA2 (rs11571833; OR 1.26, 95% CI 1.18-1.35; p=2.3 x 10^-13). Fine-mapping and functional analysis nominated rs11571833 as a likely causal variant that disrupts a BRCA2 splice site, leading to reduced mRNA stability. Carriers of the minor allele had a 26% increased risk of pancreatic cancer. These findings confirm BRCA2 as a susceptibility gene for sporadic pancreatic cancer beyond high-penetrance familial syndromes.",
+      "expected": {
+        "evidence_type":    "human genetics",
+        "effect_direction": "supports",
+        "model_organism":   "not reported",
+        "sample_size":      "n=14,846"
+      }
+    },
+    {
+      "id": 5,
+      "pmid": null,
+      "title": "Association between PTEN germline variants and endometrial cancer risk: a population-based cohort study",
+      "abstract": "We examined the association between rare and common germline variants in PTEN and endometrial cancer risk in a population-based cohort of 8,212 women followed from 1998 to 2020. Sequencing identified 47 carriers of pathogenic PTEN variants. Lifetime cumulative endometrial cancer risk was 28.2% (95% CI 15.1-41.3%) in carriers compared with 2.9% in non-carriers. However, after adjusting for BMI, diabetes, and hormonal factors, the hazard ratio was attenuated (HR 4.1, 95% CI 1.9-8.7), suggesting that part of the excess risk in PTEN variant carriers may be mediated through shared metabolic risk factors. The population-attributable fraction of PTEN variants for endometrial cancer was 0.3%.",
+      "expected": {
+        "evidence_type":    "human genetics",
+        "effect_direction": "neutral",
+        "model_organism":   "not reported",
+        "sample_size":      "n=8,212"
+      }
+    },
+    {
+      "id": 6,
+      "pmid": null,
+      "title": "Mendelian randomisation study of circulating VEGF-A levels and coronary artery disease risk using UK Biobank",
+      "abstract": "Using genetic instruments for circulating VEGF-A protein levels derived from cis-acting pQTLs, we performed a two-sample Mendelian randomisation analysis in UK Biobank participants (n=412,000) to evaluate the causal relationship between VEGF-A and coronary artery disease. A one standard deviation increase in genetically predicted VEGF-A was associated with reduced risk of coronary artery disease (OR 0.87, 95% CI 0.81-0.94; p=4.7 x 10^-4). Sensitivity analyses using weighted median and MR-Egger approaches were consistent with the primary analysis. These findings suggest that raising VEGF-A levels may be cardioprotective and support VEGFR signalling as a potential therapeutic target in coronary artery disease.",
+      "expected": {
+        "evidence_type":    "human genetics",
+        "effect_direction": "supports",
+        "model_organism":   "not reported",
+        "sample_size":      "n=412,000"
+      }
+    },
+    {
+      "id": 7,
+      "pmid": null,
+      "title": "Mendelian randomisation provides no evidence for a causal role of CDK4 in type 2 diabetes",
+      "abstract": "We used genome-wide significant variants in CDK4 as instrumental variables in a two-sample Mendelian randomisation framework, drawing on GWAS summary statistics from the DIAGRAM consortium (3,140 type 2 diabetes cases, 98,912 controls) and the MAGIC consortium for glycaemic traits. Genetically instrumented changes in CDK4 expression were not associated with type 2 diabetes risk (OR 1.02 per SD increase; 95% CI 0.96-1.08; p=0.51), fasting glucose, or HbA1c after multiple testing correction. Colocalization analyses showed no shared causal variants between CDK4 expression QTLs and type 2 diabetes GWAS signals at this locus. Our findings do not support a causal role for CDK4 in type 2 diabetes pathogenesis.",
+      "expected": {
+        "evidence_type":    "human genetics",
+        "effect_direction": "contradicts",
+        "model_organism":   "not reported",
+        "sample_size":      "n=3,140"
+      }
+    },
+    {
+      "id": 8,
+      "pmid": null,
+      "title": "BRAF V600E inhibition suppresses tumour growth in a syngeneic mouse model of BRAF-mutant melanoma",
+      "abstract": "To evaluate the in vivo efficacy of BRAF inhibition, we established a syngeneic mouse model using YUMM1.7 cells harbouring BRAF V600E implanted subcutaneously into C57BL/6 mice. Forty mice were randomised to receive vemurafenib (60 mg/kg twice daily, n=20) or vehicle control (n=20). Vemurafenib treatment resulted in significant tumour growth inhibition (68% reduction in mean tumour volume at day 21; p<0.001) and prolonged median survival (38 vs 24 days; p=0.003). Immunohistochemical analysis showed reduced Ki-67 staining and increased cleaved caspase-3 in treated tumours, consistent with decreased proliferation and increased apoptosis. These data support BRAF V600E as a therapeutically relevant target in this melanoma model.",
+      "expected": {
+        "evidence_type":    "animal model",
+        "effect_direction": "supports",
+        "model_organism":   "mouse",
+        "sample_size":      "n=40"
+      }
+    },
+    {
+      "id": 9,
+      "pmid": null,
+      "title": "HER2-targeted therapy reduces cardiac hypertrophy in a rat model of pressure overload",
+      "abstract": "We used a rat model of transverse aortic constriction (TAC) to evaluate the role of HER2 signalling in pathological cardiac hypertrophy. Sprague-Dawley rats underwent TAC surgery (n=24) or sham operation (n=12) and were treated with the HER2 inhibitor lapatinib (100 mg/kg daily) or vehicle starting one week post-surgery. After eight weeks, lapatinib-treated TAC rats showed a 34% reduction in heart weight to body weight ratio (p=0.008), improved fractional shortening (42% vs 29%; p=0.003), and reduced expression of foetal gene programme markers compared with vehicle-treated TAC controls. These findings implicate HER2 signalling in maladaptive cardiac remodelling and suggest a potential therapeutic avenue.",
+      "expected": {
+        "evidence_type":    "animal model",
+        "effect_direction": "supports",
+        "model_organism":   "rat",
+        "sample_size":      "n=24"
+      }
+    },
+    {
+      "id": 10,
+      "pmid": null,
+      "title": "PARP inhibitor olaparib fails to reduce tumour burden in a BRCA1-wild-type mouse xenograft model",
+      "abstract": "The efficacy of olaparib was evaluated in BRCA1-wild-type MDA-MB-231 triple-negative breast cancer xenografts established in NOD/SCID mice. Thirty-six mice were randomised to olaparib (50 mg/kg daily; n=18) or vehicle (n=18) for 28 days. Olaparib treatment did not significantly reduce tumour volume (mean 842 mm3 vs 871 mm3; p=0.71), tumour weight, or circulating CA 15-3 levels compared with vehicle. Histological analysis revealed no difference in Ki-67 index or apoptotic rate between groups. These data indicate that BRCA1-wild-type TNBC is intrinsically resistant to single-agent PARP inhibition and suggest that BRCA1 deficiency is a prerequisite for olaparib sensitivity in this setting.",
+      "expected": {
+        "evidence_type":    "animal model",
+        "effect_direction": "contradicts",
+        "model_organism":   "mouse",
+        "sample_size":      "n=36"
+      }
+    },
+    {
+      "id": 11,
+      "pmid": null,
+      "title": "Zebrafish larvae as a high-throughput model for evaluating VEGFR2 inhibitors on developmental angiogenesis",
+      "abstract": "We developed a zebrafish (Danio rerio) larval assay to evaluate the anti-angiogenic activity of VEGFR2 inhibitors using transgenic Tg(kdrl:EGFP) fish in which endothelial cells are fluorescently labelled. A library of 60 VEGFR2 inhibitor candidates was screened at two concentrations (1 µM and 10 µM) by quantifying intersegmental vessel sprouting at 48 hours post-fertilisation. The established positive control sunitinib inhibited vessel formation by 78% at 10 µM (p<0.001). Fourteen of 60 compounds showed greater than 50% inhibition at 10 µM with acceptable embryonic viability (>80%). This platform provides a tractable, medium-throughput system for prioritising VEGFR2 inhibitors prior to mammalian in vivo studies.",
+      "expected": {
+        "evidence_type":    "animal model",
+        "effect_direction": "supports",
+        "model_organism":   "zebrafish",
+        "sample_size":      "n=60"
+      }
+    },
+    {
+      "id": 12,
+      "pmid": null,
+      "title": "KRAS G12C covalent inhibition disrupts RAF-MEK-ERK signalling in pancreatic cancer cell lines",
+      "abstract": "We characterised the biochemical and cellular effects of AMG-510 (sotorasib) in a panel of KRAS G12C-harbouring pancreatic ductal adenocarcinoma cell lines. Covalent engagement of the switch-II pocket by AMG-510 was confirmed by competitive labelling with a fluorescent GDP analogue. In three independent experiments, treatment with AMG-510 (1 µM, 72 h) reduced phospho-ERK levels by 85-92% and phospho-AKT by 34-61% as quantified by western blot. Proliferation (BrdU incorporation) was inhibited by 73% (IC50 = 62 nM) and apoptosis (Annexin V/PI staining) increased 4.1-fold compared with DMSO control. These data establish on-target MAPK pathway suppression as the primary mechanism of AMG-510 anti-tumour activity in KRAS G12C pancreatic cancer cells.",
+      "expected": {
+        "evidence_type":    "in vitro",
+        "effect_direction": "supports",
+        "model_organism":   "not reported",
+        "sample_size":      "3 independent experiments"
+      }
+    },
+    {
+      "id": 13,
+      "pmid": null,
+      "title": "Transcriptomic profiling of EGFR-mutant NSCLC cell lines reveals heterogeneous response signatures to osimertinib",
+      "abstract": "We performed RNA sequencing on a panel of twelve EGFR-mutant non-small cell lung cancer cell lines (nine exon 19 deletion, three L858R) before and after 48-hour exposure to osimertinib (100 nM). Principal component analysis revealed that pre-treatment transcriptomic profiles clustered by EGFR mutation subtype rather than by subsequent osimertinib sensitivity. Differential expression analysis identified 1,847 significantly upregulated and 2,103 downregulated genes (FDR <0.05). Pathway enrichment revealed heterogeneous activation of bypass signalling routes including MET, FGFR1, and AXL across cell lines, with no single pathway consistently associated with resistance. These data highlight the transcriptional heterogeneity of EGFR-mutant NSCLC and the challenge of predicting osimertinib response from baseline gene expression.",
+      "expected": {
+        "evidence_type":    "in vitro",
+        "effect_direction": "neutral",
+        "model_organism":   "not reported",
+        "sample_size":      "not reported"
+      }
+    },
+    {
+      "id": 14,
+      "pmid": null,
+      "title": "CDK4/6 inhibition overcomes acquired resistance to fulvestrant in ER-positive breast cancer cells via cell cycle re-engagement",
+      "abstract": "Acquired resistance to fulvestrant (fulvestrant-resistant MCF7-FR cells) is associated with hyperactivation of the CDK4/6-RB axis. We evaluated whether CDK4/6 inhibition could restore sensitivity in this context. Treatment of MCF7-FR cells with palbociclib (250 nM) reduced phospho-RB (Ser780) by 91% within 24 hours, arrested cells in G1 (72% G1 vs 41% in untreated; p<0.001), and when combined with fulvestrant produced synergistic growth inhibition (Bliss synergy score 18.4). Re-sensitisation was mediated through FOXM1 downregulation, as confirmed by siRNA rescue experiments. These data support CDK4/6 inhibition as a strategy to overcome endocrine resistance in ER-positive breast cancer.",
+      "expected": {
+        "evidence_type":    "in vitro",
+        "effect_direction": "supports",
+        "model_organism":   "not reported",
+        "sample_size":      "not reported"
+      }
+    },
+    {
+      "id": 15,
+      "pmid": null,
+      "title": "PD-L1 blockade does not restore T-cell cytotoxicity in microsatellite-stable colorectal cancer organoids",
+      "abstract": "Microsatellite-stable (MSS) colorectal cancers are largely refractory to immune checkpoint blockade, but the underlying mechanisms remain incompletely understood. We established patient-derived tumour organoids from six MSS colorectal cancer resection specimens and co-cultured them with autologous tumour-infiltrating lymphocytes in the presence of anti-PD-L1 antibody (atezolizumab, 10 µg/mL) or isotype control for 72 hours. PD-L1 blockade did not significantly increase CD8+ T-cell cytotoxicity (16.3% vs 14.8% specific lysis; p=0.61) or IFN-γ secretion in any of the six patient samples tested. Flow cytometry confirmed adequate PD-L1 expression on organoid cells and PD-1 expression on TILs. These findings suggest that PD-L1 alone is insufficient to explain immune exclusion in MSS colorectal cancer.",
+      "expected": {
+        "evidence_type":    "in vitro",
+        "effect_direction": "contradicts",
+        "model_organism":   "not reported",
+        "sample_size":      "not reported"
+      }
+    },
+    {
+      "id": 16,
+      "pmid": null,
+      "title": "CRISPR-Cas9 knockout of TP53 accelerates proliferation in MCF10A mammary epithelial cells under nutrient stress",
+      "abstract": "To model TP53 loss-of-function in non-transformed mammary epithelial cells, we used CRISPR-Cas9 to generate isogenic TP53 knockout (TP53-KO) MCF10A cell lines. Under standard culture conditions, TP53-KO cells showed no significant difference in doubling time compared with wild-type controls. However, under serum deprivation (0.5% FBS), TP53-KO cells maintained significantly higher viability (83% vs 54% at 72 hours; p<0.001), greater BrdU incorporation (2.4-fold; p<0.001), and reduced caspase-3/7 activity (0.4-fold; p=0.002). RNA sequencing revealed upregulation of glycolytic and one-carbon metabolic pathways in TP53-KO cells under stress. These data demonstrate that TP53 loss confers a proliferative advantage under metabolic stress, supporting TP53 as a tumour suppressor that restricts adaptation to nutrient-poor microenvironments.",
+      "expected": {
+        "evidence_type":    "in vitro",
+        "effect_direction": "supports",
+        "model_organism":   "not reported",
+        "sample_size":      "not reported"
+      }
+    },
+    {
+      "id": 17,
+      "pmid": null,
+      "title": "Targeting KRAS in cancer: a systematic review of direct inhibitors and their clinical development",
+      "abstract": "KRAS is the most frequently mutated oncogene in human cancer, yet it has historically been considered undruggable. Recent structural insights into the switch-II pocket have enabled development of covalent inhibitors targeting the G12C mutation, with sotorasib and adagrasib receiving regulatory approval in NSCLC. This systematic review summarises the preclinical rationale, clinical trial data, resistance mechanisms, and combination strategies for direct KRAS inhibitors published between 2019 and 2024. We searched MEDLINE and Embase using MeSH terms for KRAS, oncogene inhibition, and targeted therapy, identifying 214 eligible studies. Key themes include the importance of adaptive feedback reactivation via RTK-SOS1 signalling as a primary resistance mechanism and the emerging role of SOS1 inhibitors and MEK inhibitors as rational combination partners. Future directions include pan-KRAS and multi-mutation inhibitors currently in early clinical development.",
+      "expected": {
+        "evidence_type":    "review",
+        "effect_direction": "neutral",
+        "model_organism":   "not reported",
+        "sample_size":      "not reported"
+      }
+    },
+    {
+      "id": 18,
+      "pmid": null,
+      "title": "The biology of BRCA1 and BRCA2 and their roles in homologous recombination repair: a narrative review",
+      "abstract": "BRCA1 and BRCA2 are tumour suppressors that play central roles in DNA double-strand break repair via homologous recombination. This narrative review summarises current understanding of BRCA1/2 protein structure, post-translational regulation, and their recruitment to sites of DNA damage. We discuss how germline loss-of-function variants in BRCA1 and BRCA2 predispose to breast, ovarian, pancreatic, and prostate cancers, and how somatic reversion mutations represent a major mechanism of acquired resistance to PARP inhibitors. The relationship between BRCAness — a phenocopy of BRCA dysfunction arising from alternative mechanisms such as promoter methylation or RAD51 paralogue mutation — and PARP inhibitor sensitivity is also reviewed. Ongoing debates around the optimal biomarker for patient selection and the sequencing of PARP inhibitors with chemotherapy and immunotherapy are discussed in the context of current evidence.",
+      "expected": {
+        "evidence_type":    "review",
+        "effect_direction": "neutral",
+        "model_organism":   "not reported",
+        "sample_size":      "not reported"
+      }
+    },
+    {
+      "id": 19,
+      "pmid": null,
+      "title": "Converging evidence supports CDK4/6 inhibition as a treatment strategy in hormone receptor-positive breast cancer: a meta-analysis",
+      "abstract": "We conducted a systematic review and meta-analysis of randomised controlled trials evaluating CDK4/6 inhibitors (palbociclib, ribociclib, abemaciclib) in combination with endocrine therapy for hormone receptor-positive, HER2-negative advanced breast cancer. Searches of MEDLINE, Embase, and ClinicalTrials.gov identified seven eligible phase III trials enrolling 4,580 patients. Pooled analysis demonstrated a significant improvement in progression-free survival with CDK4/6 inhibitor-endocrine therapy combination versus endocrine therapy alone (HR 0.54, 95% CI 0.49-0.60; I2=18%). Overall survival benefit was observed in four of seven trials with mature data (HR 0.76, 95% CI 0.67-0.86). Grade 3-4 neutropaenia was more frequent with CDK4/6 inhibitors (pooled rate 55% vs 2%; OR 62.3). These results confirm CDK4/6 as a validated therapeutic target in this setting.",
+      "expected": {
+        "evidence_type":    "review",
+        "effect_direction": "supports",
+        "model_organism":   "not reported",
+        "sample_size":      "not reported"
+      }
+    },
+    {
+      "id": 20,
+      "pmid": null,
+      "title": "VEGF pathway inhibition in oncology: mechanisms, resistance, and future directions",
+      "abstract": "Vascular endothelial growth factor (VEGF) signalling drives tumour angiogenesis and has been a major therapeutic target since the approval of bevacizumab in 2004. This review summarises the molecular mechanisms by which tumours upregulate VEGF-A and its receptors VEGFR1, VEGFR2, and VEGFR3, and the diversity of approved agents including antibodies (bevacizumab, ramucirumab), receptor tyrosine kinase inhibitors (sunitinib, sorafenib, axitinib, lenvatinib), and bispecific molecules. Mechanisms of primary and acquired resistance, including upregulation of alternative pro-angiogenic pathways (FGF, Ang-2, PDGF), tumour vessel normalisation, and pericyte stabilisation, are discussed. We also review evidence from meta-analyses across tumour types regarding the conditions under which VEGF inhibition provides overall survival benefit versus progression-free survival benefit only, and outline emerging combination strategies with immune checkpoint inhibitors and HIF-2α inhibitors for clear cell renal cell carcinoma.",
+      "expected": {
+        "evidence_type":    "review",
+        "effect_direction": "neutral",
+        "model_organism":   "not reported",
+        "sample_size":      "not reported"
+      }
+    }
+  ]
+}
