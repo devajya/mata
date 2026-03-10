@@ -40,6 +40,7 @@ from typing import Any
 
 import pytest
 
+from backend.llm import extract_structured_evidence
 from backend.models import StructuredEvidence, VALID_EVIDENCE_TYPES
 
 # ── Fixture loading ───────────────────────────────────────────────────────────
@@ -322,8 +323,6 @@ async def test_extraction_accuracy_report():
     an exact string match would produce false negatives (e.g. "mouse" vs "mice").
     Future slices may add fuzzy matching or normalisation for these fields.
     """
-    from backend.llm import extract_structured_evidence
-
     cases = _load_cases()
     if not cases:
         pytest.skip("No fixture entries — add abstracts before running accuracy test.")

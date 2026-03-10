@@ -70,9 +70,14 @@ _client: Groq | None = None
 # "review" is the least-specific evidence_type — never factually wrong as a fallback.
 # "neutral" is the least-specific effect_direction — safe for unknowns.
 # "not reported" is the sentinel for absent optional string fields.
-# All values must be valid members of their Literal types defined in models.py.
-# If models.py Literal values change, update these defaults and re-verify they pass
-# StructuredEvidence.model_validate().
+#
+# CONSISTENCY CONTRACT — three locations must stay in sync:
+#   1. _SAFE_DEFAULTS (here)             — runtime fallback values
+#   2. StructuredEvidence (models.py)    — field names and Literal types that validate these values
+#   3. EvidenceItem defaults (models.py) — API-layer fallbacks, should match these semantically
+# If you add a required field to StructuredEvidence, add it here too or _parse_structured()
+# will raise ValidationError on every LLM parse failure instead of falling back gracefully.
+# If you rename a Literal value (e.g. "review" → "narrative review"), update it here too.
 _SAFE_DEFAULTS: dict[str, str] = {
     "evidence_type": "review",
     "effect_direction": "neutral",
@@ -105,7 +110,7 @@ or "not reported" if not stated
 Classification rules:
   evidence_type — classify the primary study design:
     "clinical trial"  : interventional study in humans (RCT, Phase I/II/III, open-label)
-    "human genetics"  : observational study in humans (GWAS, cohort, case-control, biobank)
+    "human genetics"  : study where genetic or genomic variation is the primary exposure (GWAS, Mendelian randomisation, sequencing, variant association, heritability analysis) — NOT general biomarker or clinical cohorts
     "animal model"    : in vivo non-human experiments (mouse, rat, zebrafish, etc.)
     "in vitro"        : cell lines, organoids, biochemical assays, computational models
     "review"          : systematic review, meta-analysis, narrative review, opinion piece
@@ -117,7 +122,7 @@ Classification rules:
 
   model_organism: use "not reported" for clinical trials and human genetics studies
     unless a model organism is explicitly co-mentioned
-  sample_size: use the exact phrasing from the abstract; "not reported" if absent
+  sample_size: use the exact phrasing from the abstract; if no explicit numeric sample size is stated, use 'not reported' do not infer, estimate, or use zero
 
 Never hallucinate values. Use "not reported" if information is absent or unclear.
 Return only the JSON object — no explanation, no preamble, no markdown fences."""

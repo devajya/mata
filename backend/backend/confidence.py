@@ -146,6 +146,12 @@ class ConfidenceEngine:
 
         AGENT-CTX: Tier boundaries use module-level constants _TIER_HIGH_MIN and
         _TIER_MEDIUM_MIN. See their definition above for calibration rationale.
+
+        AGENT-CTX: Factor scores are NOT clamped. The protocol requires each Factor
+        to return a value in [0.0, 1.0] and the engine trusts this invariant. An
+        out-of-range score (e.g. 1.2 from a buggy factor) will silently produce a
+        wrong tier. When adding a new Factor, verify its score() always clamps to
+        [0.0, 1.0] — see SubjectTypeFactor._SCORES for the established pattern.
         """
         if not self._factors:
             # AGENT-CTX: Empty engine guard — see docstring above.
@@ -204,9 +210,6 @@ class SubjectTypeFactor:
     works without arguments in the common case.
     """
 
-    # AGENT-CTX: Class-level default — see docstring above.
-    _DEFAULT_WEIGHT: float = 1.0
-
     # AGENT-CTX: Scores are a class-level constant, not a method, so they are
     # readable at a glance and do not re-allocate on every call.
     _SCORES: dict[str, float] = {
@@ -217,9 +220,7 @@ class SubjectTypeFactor:
         "review":         0.1,
     }
 
-    def __init__(self, weight: float = _DEFAULT_WEIGHT) -> None:
-        # AGENT-CTX: Instance attribute shadows the class default, satisfying
-        # the Factor protocol's `weight: float` requirement at the instance level.
+    def __init__(self, weight: float = 1.0) -> None:
         self.weight = weight
 
     def score(self, evidence: StructuredEvidence) -> float:

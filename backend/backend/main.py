@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.confidence import ConfidenceEngine, SubjectTypeFactor
 from backend.llm import extract_structured_evidence
-from backend.models import EvidenceItem, ErrorResponse, SearchResponse  # noqa: F401
+from backend.models import EvidenceItem, ErrorResponse, SearchResponse
 from backend.pubmed import fetch_abstracts
 
 # AGENT-CTX: App-level metadata used by Render's auto-generated /docs page.

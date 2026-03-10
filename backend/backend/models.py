@@ -86,11 +86,12 @@ class EvidenceItem(BaseModel):
     Construction happens in main.py after both extraction and scoring are complete.
 
     AGENT-CTX: The four new fields (effect_direction, model_organism, sample_size,
-    confidence_tier) have safe default values. These defaults are TRANSITIONAL —
-    they exist solely to keep main.py and its mock tests passing while the endpoint
-    wiring is updated in T6. After T6, main.py always sets these fields explicitly
-    from StructuredEvidence + ConfidenceEngine output. Do not rely on these defaults
-    in production code paths; treat them as dead code once T6 is complete.
+    confidence_tier) have permanent defensive defaults. main.py always sets these
+    explicitly from StructuredEvidence + ConfidenceEngine output, so the defaults
+    are never hit in the normal request path. They exist as a safety net for any
+    future code path (e.g. a new endpoint or test helper) that constructs EvidenceItem
+    without setting all fields. Do NOT remove the defaults — they prevent silent
+    AttributeError on partial construction and are correct fallback values.
     """
 
     pmid: str
@@ -102,7 +103,7 @@ class EvidenceItem(BaseModel):
     evidence_type: EvidenceType
 
     # AGENT-CTX: Fields below are new in Milestone 1 (Structured Evidence Extraction).
-    # Defaults are transitional placeholders — see class docstring above.
+    # Defaults are permanent defensive fallbacks — see class docstring above.
     effect_direction: EffectDirection = "neutral"
     model_organism: str = "not reported"
     sample_size: str = "not reported"

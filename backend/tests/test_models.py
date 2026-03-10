@@ -157,9 +157,10 @@ def test_evidence_item_new_fields_have_safe_defaults():
     """
     New fields default to safe values when not provided.
 
-    AGENT-CTX: These defaults exist to keep existing endpoint code (main.py)
-    and its mock tests passing during the T1→T6 transition. After T6 wires
-    extract_structured_evidence, main.py will always set these fields explicitly.
+    AGENT-CTX: These defaults are permanent defensive fallbacks (not transitional).
+    main.py always sets these fields explicitly from StructuredEvidence + ConfidenceEngine,
+    so the defaults are never hit in the normal request path. They guard against partial
+    construction in test helpers or future endpoints. Do not remove them.
     The defaults are intentionally conservative: "neutral" / "not reported" / "low".
     """
     item = EvidenceItem(
