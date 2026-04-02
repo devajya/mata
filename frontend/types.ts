@@ -62,3 +62,39 @@ export interface SearchResponse {
 export interface ApiError {
   detail: string;
 }
+
+// ── Async job types (Milestone 3) ─────────────────────────────────────────────
+// AGENT-CTX: Mirrors backend/backend/db/models.py exactly.
+// If JobStatus values change there, update here and in Sidebar.tsx STATUS_CHIP_COLOUR.
+
+export type JobStatus = "pending" | "running" | "complete" | "failed";
+
+export interface JobSubmitResponse {
+  job_id: string;
+  query: string;
+  status: JobStatus;
+  created_at: string; // ISO datetime string from FastAPI
+}
+
+export interface JobStatusResponse {
+  job_id: string;
+  query: string;
+  status: JobStatus;
+  // AGENT-CTX: result is null until status=complete. Always check status before reading.
+  result: SearchResponse | null;
+  // AGENT-CTX: error is null for all non-failed states.
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JobListItem {
+  job_id: string;
+  query: string;
+  status: JobStatus;
+  // AGENT-CTX: error is included in list items so the sidebar can show a failed
+  // chip without a second fetch. null for non-failed jobs.
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}

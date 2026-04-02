@@ -20,6 +20,11 @@ build/
 .coverage
 htmlcov/
 
+# SQLite databases (job state — never commit, regenerated on startup)
+*.db
+*.db-wal
+*.db-shm
+
 # Node / Next.js
 node_modules/
 .next/
@@ -37,3 +42,5 @@ Thumbs.db
 
 # Session summaries (internal dev docs, not for repo)
 session_summaries/
+ONBOARDING.md
+Overall phases.txt

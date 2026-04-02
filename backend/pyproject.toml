@@ -16,6 +16,14 @@ dependencies = [
     # Do not replace with requests — the async endpoint requires an async HTTP client.
     "httpx>=0.27.0",
     "pydantic>=2.0.0",
+    # AGENT-CTX: arq is the async Redis job queue (Milestone 3). Uses redis-py (redis>=4.2)
+    # for async operations. Do NOT add the separate aioredis package — arq 0.25+ bundles
+    # async Redis support via redis.asyncio.
+    "arq>=0.25.0",
+    # AGENT-CTX: aiosqlite provides async SQLite access for job state persistence.
+    # SQLite is the job store (Milestone 3). Shared between web process and worker via
+    # filesystem (single Render service — see render.yaml startCommand).
+    "aiosqlite>=0.20.0",
 ]
 
 [project.optional-dependencies]
