@@ -57,11 +57,45 @@ export interface EvidenceItem {
   publication_year: number | null;
 }
 
-// AGENT-CTX: SearchResponse is unchanged from the walking skeleton.
-// query echoes back the user's search string; results is the ordered list of evidence items.
+// AGENT-CTX: EdgeType — 10 scientifically-grounded edge categories replacing the old 4
+// RelationshipType values ("supports","extends","replicates","contextualizes").
+// Must match backend EdgeType Literal in backend/backend/models.py exactly —
+// any value added/removed there must be mirrored here. The LLM is constrained to
+// emit only these values via the _EDGE_SYSTEM_PROMPT in backend/backend/edges.py.
+export type EdgeType =
+  | "supports"
+  | "contradicts"
+  | "contradicts_methodological"
+  | "translates"
+  | "fails_to_translate"
+  | "mechanistically_extends"
+  | "qualifies"
+  | "combination_context"
+  | "resistance_link"
+  | "replicates";
+
+// AGENT-CTX: EdgeResult mirrors backend EdgeResult Pydantic model (backend/backend/models.py).
+// confidence is clamped to [0.1, 0.95] server-side — the frontend never re-clamps it.
+// confidence_factors is always an array (never null) — backend defaults to [].
+// flag is null unless the LLM flagged a methodological concern.
+export interface EdgeResult {
+  source_pmid: string;
+  target_pmid: string;
+  edge_type: EdgeType;
+  direction: string;      // "A→B" or "B→A" — semantic label emitted by LLM
+  confidence: number;     // [0.1, 0.95]
+  rationale: string;
+  confidence_factors: string[];
+  flag: string | null;
+}
+
+// AGENT-CTX: SearchResponse gains edges field (default [] for backwards compat with
+// pre-chain-links job results stored in SQLite that have no edges key).
+// ?? [] in the frontend ensures old records without edges don't break rendering.
 export interface SearchResponse {
   query: string;
   results: EvidenceItem[];
+  edges: EdgeResult[];
 }
 
 // AGENT-CTX: ApiError mirrors FastAPI's default HTTPException detail shape.
@@ -137,17 +171,14 @@ export interface GraphNodeData {
   grayedOut: boolean;               // set by applyGrayOut() in EvidenceGraph
 }
 
-// AGENT-CTX: RelationshipType — 4 semantic edge categories.
-// These describe the logical relationship between two evidence nodes.
-// buildEdges() is currently a stub returning [] — this type is used by
-// mockData.ts and will be used by the real edge calculation when implemented.
-export type RelationshipType =
-  | "supports"        // downstream evidence confirms the upstream finding
-  | "extends"         // builds upon the upstream mechanism
-  | "replicates"      // independent confirmation of the same finding
-  | "contextualizes"; // provides mechanistic context for the upstream node
-
+// AGENT-CTX: GraphEdgeData is the data payload on React Flow edges.
+// edge_type, confidence, and rationale are denormalised from EdgeResult here
+// so that edge tooltip/styling logic in EvidenceGraph.tsx can access them
+// without joining back to the original EdgeResult list.
+// chainIds is back-filled by buildChains() after BFS — do not set at construction time.
 export interface GraphEdgeData {
   chainIds: string[];
-  relationshipType: RelationshipType;
+  edge_type: EdgeType;
+  confidence: number;
+  rationale: string;
 }

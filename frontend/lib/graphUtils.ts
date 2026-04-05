@@ -1,23 +1,26 @@
 /**
  * Graph assembly utilities for the Evidence Chain view.
  *
- * AGENT-CTX §1 — Edge deferral:
- * buildEdges() is intentionally a STUB returning []. Semantic edge calculation
- * requires per-abstract LLM/embedding comparison which is deferred to a future
- * slice. The graph renders correctly without edges — nodes are positioned in
- * the layer grid and the absence of lines is visually acceptable for the
- * current milestone. When real edges are implemented, REPLACE buildEdges()
- * entirely (do not wrap it) and update buildChains() to split into multiple
- * chains based on edge connectivity.
+ * AGENT-CTX §1 — Real edge computation (Chain Links milestone):
+ * buildEdges() now maps backend EdgeResult objects to GraphEdge objects.
+ * The old stub returning [] has been replaced. Edges arrive pre-computed
+ * from the background worker (compute_all_edges in backend/edges.py) and
+ * are passed in via buildGraphData(items, edgeResults, query).
  *
  * AGENT-CTX §2 — No @xyflow/react imports:
- * This file and the node components (EvidenceNode, GapNode, RootNode) must NOT
- * import from @xyflow/react. Keeping the boundary clean means Jest can test
- * graph logic without canvas mocks. The cast to React Flow's Node<T>/Edge<T>
+ * This file and node components must NOT import from @xyflow/react.
+ * Jest-testable without canvas mocks. The cast to React Flow's Node<T>/Edge<T>
  * types happens ONLY in EvidenceGraph.tsx at the ReactFlow boundary.
+ *
+ * AGENT-CTX §3 — Multi-chain via BFS:
+ * buildChains() discovers connected components in the evidence graph using BFS.
+ * Each connected component = one ChainMeta. Isolated nodes each get their own
+ * chain. Chains are sorted: most nodes first, then highest max-layer first.
+ * The root node belongs to ALL chains so it stays visible regardless of which
+ * chain is active (exclusive-visibility toggle in EvidenceGraph.tsx).
  */
 
-import { ChainMeta, EvidenceItem, GraphEdgeData, GraphNodeData } from "../types";
+import { ChainMeta, EdgeResult, EvidenceItem, GraphEdgeData, GraphNodeData } from "../types";
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 
@@ -37,8 +40,9 @@ export const LAYER_NAMES: Record<number, string> = {
 
 export const CHAIN_LAYER_ORDER = [0, 1, 2, 3];
 
-// AGENT-CTX: Chain colours — one per possible chain. Single chain today;
-// additional colours needed when multi-chain is implemented.
+// AGENT-CTX: CHAIN_COLOURS wraps at 5 — intentional. More than 5 chains is rare
+// in practice (10 papers max per query → few components). Wrapping avoids
+// maintaining a longer palette that is harder to distinguish perceptually.
 const CHAIN_COLOURS = ["#1a6faf", "#6a3d9a", "#33a02c", "#b15928", "#e07c00"];
 
 // ── Lightweight node/edge shapes (no @xyflow/react dependency) ────────────────
@@ -59,15 +63,19 @@ export interface GraphEdge {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+// AGENT-CTX: edgeResults is the second param (not third) to keep items/edges
+// together — they are co-produced by the same worker job. query is last because
+// it is only used for the root node label and is semantically separate.
 export function buildGraphData(
   items: EvidenceItem[],
+  edgeResults: EdgeResult[],
   query: string,
 ): { nodes: GraphNode[]; edges: GraphEdge[]; chains: ChainMeta[] } {
-  const reviews     = items.filter((i) => i.layer === -1);
-  const chainItems  = items.filter((i) => i.layer >= 0);
+  const reviews    = items.filter((i) => i.layer === -1);
+  const chainItems = items.filter((i) => i.layer >= 0);
 
   const nodes  = buildNodes(chainItems, query);
-  const edges  = buildEdges(nodes, "chain-0");
+  const edges  = buildEdges(nodes, edgeResults);
   const chains = buildChains(nodes, edges, reviews);
   assignPositions(nodes);
 
@@ -80,38 +88,45 @@ function buildNodes(chainItems: EvidenceItem[], query: string): GraphNode[] {
   const nodes: GraphNode[] = [];
 
   // Root node — the search query anchor
+  // AGENT-CTX: chainIds initialised to [] here; buildChains() fills in all chain
+  // IDs so the root remains visible for every chain (exclusive toggle still works).
   nodes.push({
     id:       "root",
     type:     "root",
-    position: { x: ROOT_X, y: 0 }, // y updated by assignPositions
+    position: { x: ROOT_X, y: 0 },
     data: {
       nodeType:  "root",
       layer:     -2,
       evidence:  null,
       layerName: query,
-      chainIds:  ["chain-0"],
+      chainIds:  [],   // populated by buildChains
       grayedOut: false,
     },
   });
 
   // Evidence nodes — one per chain item
+  // AGENT-CTX: chainIds initialised to [] here; buildChains() assigns each node
+  // to exactly one chain based on BFS connectivity.
   for (const item of chainItems) {
     nodes.push({
       id:       `evidence-${item.pmid}`,
       type:     "evidence",
-      position: { x: 0, y: 0 }, // assigned by assignPositions
+      position: { x: 0, y: 0 },
       data: {
         nodeType:  "evidence",
         layer:     item.layer,
         evidence:  item,
         layerName: LAYER_NAMES[item.layer] ?? "Unknown",
-        chainIds:  ["chain-0"],
+        chainIds:  [],   // populated by buildChains
         grayedOut: false,
       },
     });
   }
 
   // Gap nodes — one per layer that has no evidence
+  // AGENT-CTX: Gap nodes always have chainIds: [] — they are visual placeholders
+  // and are never owned by a chain. EvidenceGraph.tsx renders them regardless
+  // of which chain is active.
   const presentLayers = new Set(chainItems.map((i) => i.layer));
   for (const layer of CHAIN_LAYER_ORDER) {
     if (!presentLayers.has(layer)) {
@@ -134,39 +149,148 @@ function buildNodes(chainItems: EvidenceItem[], query: string): GraphNode[] {
   return nodes;
 }
 
-// AGENT-CTX: buildEdges is a STUB — see module docstring §1.
-// Returns [] until semantic edge calculation is implemented.
-// Signature is intentionally simple: replace entirely when real edges arrive.
-function buildEdges(_nodes: GraphNode[], _chainId: string): GraphEdge[] {
-  return [];
+// ── Edge builder ──────────────────────────────────────────────────────────────
+
+// AGENT-CTX: Maps backend EdgeResult objects to GraphEdge objects.
+// Filters edges where either endpoint node is absent from the graph —
+// defensive guard against cross-job PMIDs that shouldn't appear but might
+// if the backend result set changes between job creation and rendering.
+// chainIds is left [] here; buildChains() back-fills after BFS discovery.
+function buildEdges(nodes: GraphNode[], edgeResults: EdgeResult[]): GraphEdge[] {
+  const nodeIdSet = new Set(nodes.map((n) => n.id));
+  const edges: GraphEdge[] = [];
+
+  for (const er of edgeResults) {
+    const sourceId = `evidence-${er.source_pmid}`;
+    const targetId = `evidence-${er.target_pmid}`;
+
+    if (!nodeIdSet.has(sourceId) || !nodeIdSet.has(targetId)) continue;
+
+    edges.push({
+      id:     `edge-${er.source_pmid}-${er.target_pmid}`,
+      source: sourceId,
+      target: targetId,
+      data: {
+        chainIds:   [],          // populated by buildChains
+        edge_type:  er.edge_type,
+        confidence: er.confidence,
+        rationale:  er.rationale,
+      },
+    });
+  }
+
+  return edges;
 }
 
-// ── Chain builder ─────────────────────────────────────────────────────────────
+// ── Chain builder (BFS connected components) ──────────────────────────────────
 
+// AGENT-CTX: BFS over evidence nodes only. Gap and root nodes are excluded from
+// the connectivity graph: gap nodes are placeholders, root is always visible.
+// Each connected component (including isolated single nodes) becomes one ChainMeta.
+// After chain discovery, chainIds are back-filled on both nodes and edges so that
+// EvidenceGraph.tsx can filter by chain without re-running graph algorithms.
 function buildChains(
   nodes: GraphNode[],
-  _edges: GraphEdge[],
+  graphEdges: GraphEdge[],
   reviews: EvidenceItem[],
 ): ChainMeta[] {
-  // AGENT-CTX: Single default chain until semantic edges enable multi-chain discovery.
-  // All evidence nodes (not gap, not root) belong to chain-0.
-  // When buildEdges() returns real edges, rebuild chains by tracing edge connectivity.
-  const nodeIds = nodes
-    .filter((n) => n.data.nodeType === "evidence")
-    .map((n) => n.id);
+  const evidenceNodes = nodes.filter((n) => n.data.nodeType === "evidence");
+  if (evidenceNodes.length === 0) return [];
 
-  const review = reviews.length > 0 ? reviews[0] : null;
+  // Build undirected adjacency map over evidence nodes
+  const adjacency = new Map<string, Set<string>>();
+  for (const node of evidenceNodes) {
+    adjacency.set(node.id, new Set());
+  }
+  for (const edge of graphEdges) {
+    // AGENT-CTX: Both directions added so BFS works regardless of edge direction
+    // (edge semantic direction "A→B" is stored in GraphEdgeData, not the graph topology).
+    adjacency.get(edge.source)?.add(edge.target);
+    adjacency.get(edge.target)?.add(edge.source);
+  }
 
-  return [
-    {
-      id:      "chain-0",
-      label:   "Evidence Chain 1",
-      color:   CHAIN_COLOURS[0],
-      nodeIds,
-      edgeIds: [],
-      review,
-    },
-  ];
+  // BFS — discover connected components
+  const visited = new Set<string>();
+  const components: string[][] = [];
+
+  for (const node of evidenceNodes) {
+    if (visited.has(node.id)) continue;
+
+    const component: string[] = [];
+    const queue: string[] = [node.id];
+    visited.add(node.id);
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      component.push(current);
+      for (const neighbor of adjacency.get(current) ?? []) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          queue.push(neighbor);
+        }
+      }
+    }
+
+    components.push(component);
+  }
+
+  // AGENT-CTX: Sort chains descending by size, then by max layer within component.
+  // This puts the richest (most-connected, highest-evidence) chain first so it
+  // becomes chain-0 — the one shown by default on load.
+  const nodeLayerMap = new Map(nodes.map((n) => [n.id, n.data.layer]));
+  components.sort((a, b) => {
+    if (b.length !== a.length) return b.length - a.length;
+    const maxA = Math.max(...a.map((id) => nodeLayerMap.get(id) ?? 0));
+    const maxB = Math.max(...b.map((id) => nodeLayerMap.get(id) ?? 0));
+    return maxB - maxA;
+  });
+
+  // Build ChainMeta objects
+  const chains: ChainMeta[] = components.map((nodeIds, i) => ({
+    id:      `chain-${i}`,
+    label:   `Evidence Chain ${i + 1}`,
+    color:   CHAIN_COLOURS[i % CHAIN_COLOURS.length],
+    nodeIds,
+    edgeIds: [],            // populated in back-fill pass below
+    // AGENT-CTX: Review is attached to chain-0 only. Reviews (layer -1) are not
+    // part of the BFS graph so they have no natural chain affinity. Attaching to
+    // the first (richest) chain ensures the review is visible on initial load.
+    review:  i === 0 && reviews.length > 0 ? reviews[0] : null,
+  }));
+
+  // Back-fill chainIds on evidence nodes
+  const chainIdByNodeId = new Map<string, string>();
+  for (const chain of chains) {
+    for (const nodeId of chain.nodeIds) {
+      chainIdByNodeId.set(nodeId, chain.id);
+    }
+  }
+  for (const node of nodes) {
+    if (node.data.nodeType === "evidence") {
+      const cid = chainIdByNodeId.get(node.id);
+      if (cid) node.data.chainIds = [cid];
+    } else if (node.data.nodeType === "root") {
+      // AGENT-CTX: Root node assigned all chain IDs so it is visible regardless
+      // of which chain is active in EvidenceGraph.tsx's exclusive-toggle logic.
+      node.data.chainIds = chains.map((c) => c.id);
+    }
+    // gap nodes keep chainIds: []
+  }
+
+  // Back-fill edgeIds on chains and chainIds on edges
+  for (const chain of chains) {
+    const chainNodeSet = new Set(chain.nodeIds);
+    const edgeIds: string[] = [];
+    for (const edge of graphEdges) {
+      if (chainNodeSet.has(edge.source) && chainNodeSet.has(edge.target)) {
+        edgeIds.push(edge.id);
+        edge.data.chainIds = [chain.id];
+      }
+    }
+    chain.edgeIds = edgeIds;
+  }
+
+  return chains;
 }
 
 // ── Layout ────────────────────────────────────────────────────────────────────

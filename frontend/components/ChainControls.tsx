@@ -13,11 +13,18 @@ interface Props {
 /**
  * Top-left overlay showing chain identity + visibility controls.
  *
- * AGENT-CTX: Each row has:
- *   - Color dot (●) for visual chain identity
- *   - Label button → toggles ChainPanel open/close for that chain
- *   - Checkbox → toggles edge visibility for that chain
- * Selected row gets a subtle highlight (#f0f4ff background).
+ * AGENT-CTX: Exclusive visibility model (Chain Links milestone).
+ * Previously each chain had an independent checkbox (additive multi-select).
+ * Now clicking a chain row makes it the ONLY visible chain — radio-button UX.
+ * The checkbox is removed; the entire row is a single clickable area that
+ * calls both onToggleChain (visibility) and onSelectChain (panel) on click.
+ *
+ * AGENT-CTX: Visual indicator for the active (visible) chain:
+ *   - Bold label when the chain is in visibleChainIds
+ *   - Colored left border (chain.color) on the active row
+ *   - Subtle blue background when ChainPanel is open (selectedChainId match)
+ * The active chain and the selected chain are independent states — a chain can
+ * be visible without its panel open, and vice versa (though toggling closes panel).
  *
  * AGENT-CTX: position:absolute puts this inside React Flow's container div,
  * which already has position:relative. z-index 5 places it above the canvas
@@ -49,12 +56,12 @@ export function ChainControls({
     >
       <p
         style={{
-          margin:          "0 0 0.4rem 0",
-          fontSize:        "0.65rem",
-          fontWeight:      700,
-          color:           "#888",
-          textTransform:   "uppercase",
-          letterSpacing:   "0.06em",
+          margin:        "0 0 0.4rem 0",
+          fontSize:      "0.65rem",
+          fontWeight:    700,
+          color:         "#888",
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
         }}
       >
         Evidence Chains
@@ -65,16 +72,46 @@ export function ChainControls({
         const isVisible  = visibleChainIds.has(chain.id);
 
         return (
+          // AGENT-CTX: The entire row is a single button-like div to merge the old
+          // "label click = open panel" + "checkbox click = toggle visibility" into
+          // a single interaction: click row → show this chain exclusively + open panel.
+          // This matches the "one chain at a time" exclusive-visibility spec.
           <div
             key={chain.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => {
+              // AGENT-CTX: onToggleChain sets visibleChainIds = new Set([chainId])
+              // in EvidenceGraph (exclusive mode). Calling it here ensures clicking
+              // any chain in ChainControls activates that chain's edges/nodes.
+              onToggleChain(chain.id);
+              // Also toggle ChainPanel (open if different chain, close if same)
+              onSelectChain(isSelected ? null : chain.id);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onToggleChain(chain.id);
+                onSelectChain(isSelected ? null : chain.id);
+              }
+            }}
+            aria-pressed={isVisible}
+            aria-label={`Show ${chain.label}`}
             style={{
               display:         "flex",
               alignItems:      "center",
               gap:             "0.4rem",
-              padding:         "0.25rem 0.35rem",
+              padding:         "0.25rem 0.35rem 0.25rem 0.5rem",
               borderRadius:    4,
+              // AGENT-CTX: Colored left border on the active (visible) row gives
+              // a persistent visual anchor for which chain is currently shown,
+              // matching chain.color so it maps to the same color as the edges.
+              borderLeft:      isVisible ? `3px solid ${chain.color}` : "3px solid transparent",
               backgroundColor: isSelected ? "#f0f4ff" : "transparent",
               marginBottom:    2,
+              cursor:          "pointer",
+              userSelect:      "none",
+              transition:      "background-color 0.1s",
             }}
           >
             {/* Color dot */}
@@ -82,33 +119,17 @@ export function ChainControls({
               ●
             </span>
 
-            {/* Chain label button — opens/closes ChainPanel */}
-            <button
-              onClick={() => onSelectChain(isSelected ? null : chain.id)}
-              aria-pressed={isSelected}
+            {/* Chain label — bold when active (visible) */}
+            <span
               style={{
-                border:          "none",
-                background:      "none",
-                cursor:          "pointer",
-                fontSize:        "0.78rem",
-                fontWeight:      isSelected ? 600 : 400,
-                color:           "#333",
-                padding:         0,
-                textAlign:       "left",
-                flex:            1,
+                fontSize:   "0.78rem",
+                fontWeight: isVisible ? 600 : 400,
+                color:      "#333",
+                flex:       1,
               }}
             >
               {chain.label}
-            </button>
-
-            {/* Visibility checkbox */}
-            <input
-              type="checkbox"
-              checked={isVisible}
-              onChange={() => onToggleChain(chain.id)}
-              aria-label={`Toggle visibility of ${chain.label}`}
-              style={{ cursor: "pointer", flexShrink: 0 }}
-            />
+            </span>
           </div>
         );
       })}

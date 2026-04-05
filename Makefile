@@ -9,7 +9,7 @@ FRONTEND := frontend
 .PHONY: help \
         install \
         test test-local test-live test-e2e \
-        dev dev-local \
+        dev dev-local kill-dev \
         frontend-install frontend-test frontend-dev
 
 # ── Help ───────────────────────────────────────────────────────────────────────
@@ -44,6 +44,8 @@ help:
 	@echo "                      Requires: ollama serve + REDIS_URL in backend/.env"
 	@echo ""
 	@echo "  make frontend-dev   Next.js dev server only (:3000)"
+	@echo ""
+	@echo "  make kill-dev       Kill any process on :8000 and :3000 (fix Address in use)"
 	@echo "─────────────────────────────────────────────────────────────────────"
 	@echo ""
 
@@ -94,6 +96,18 @@ test-e2e:
 
 # ── Dev servers ────────────────────────────────────────────────────────────────
 
+# AGENT-CTX: kill-dev frees ports 8000 (uvicorn) and 3000 (Next.js) so that
+# `make dev` / `make dev-local` can restart cleanly after a tab close.
+# WSL2 does not send SIGTERM to background processes when a terminal tab closes,
+# so orphaned uvicorn/arq/next processes hold the ports until the session ends.
+# fuser -k sends SIGKILL to all PIDs bound to the given port/protocol.
+# `2>/dev/null || true` is a no-op when the port is already free.
+kill-dev:
+	@echo "Freeing :8000 and :3000…"
+	@fuser -k 8000/tcp 2>/dev/null || true
+	@fuser -k 3000/tcp 2>/dev/null || true
+	@echo "Done."
+
 # AGENT-CTX: `make dev` starts all three processes needed for the full local stack:
 #   1. uvicorn — FastAPI web server on :8000
 #   2. arq worker — picks up jobs from Redis and runs the search pipeline
@@ -102,7 +116,7 @@ test-e2e:
 # All three processes share a kill signal via `trap 'kill 0' INT TERM`.
 # If the ARQ worker fails to connect to Redis it logs an error but does not crash
 # uvicorn — POST /jobs will return 503 until Redis is reachable.
-dev:
+dev: kill-dev
 	@trap 'kill 0' INT TERM; \
 	(cd $(BACKEND) && set -a && . .env && set +a && \
 		.venv/bin/uvicorn backend.main:app --reload --port 8000) & \
@@ -115,7 +129,7 @@ dev:
 # redirecting Groq SDK calls to local Ollama. No Groq tokens consumed.
 # The ARQ worker also uses Ollama (GROQ_BASE_URL from .env.local is inherited).
 # Requires: ollama serve + REDIS_URL in backend/.env.
-dev-local:
+dev-local: kill-dev
 	@cd $(BACKEND) && set -a && . .env && . .env.local && set +a && \
 		{ curl -sf "$$OLLAMA_BASE_URL/api/tags" > /dev/null || { echo "ERROR: Ollama not reachable at $$OLLAMA_BASE_URL. Is OLLAMA_HOST=0.0.0.0 set on Windows?"; exit 1; }; }
 	@trap 'kill 0' INT TERM; \
