@@ -29,6 +29,7 @@ from arq.connections import RedisSettings
 from backend.confidence import ConfidenceEngine, SubjectTypeFactor
 from backend.db.jobs import set_job_complete, set_job_failed, set_job_running
 from backend.db.schema import _get_db_path, init_db
+from backend.graph import assign_layer
 from backend.llm import extract_structured_evidence
 from backend.models import EvidenceItem, SearchResponse
 from backend.pubmed import fetch_abstracts
@@ -85,6 +86,8 @@ async def run_search_job(ctx: dict, job_id: str, query: str) -> None:
                     model_organism=structured.model_organism,
                     sample_size=structured.sample_size,
                     confidence_tier=_engine.score(structured),
+                    layer=assign_layer(structured.evidence_type),
+                    publication_year=record.get("publication_year"),
                 )
                 for record, structured in zip(records, structured_results)
             ]

@@ -34,6 +34,8 @@ const BASE_MOCK_ITEM: EvidenceItem = {
   model_organism:   "not reported",
   sample_size:      "not reported",
   confidence_tier:  "high",
+  layer:            3,
+  publication_year: 2021,
 };
 
 const TEST_JOB_ID = "test-job-id-001";
@@ -191,11 +193,13 @@ test("shows building state while job is pending", async () => {
   expect(await screen.findByText(/building|evidence map/i)).toBeInTheDocument();
 });
 
-test("renders result list with title and evidence type after job completes", async () => {
+test("renders graph with node titles after job completes", async () => {
   /**
-   * AC2: Frontend transitions to the result view on job completion.
-   * AGENT-CTX: Mock returns complete immediately on first poll so no real
-   * timer is involved. waitFor retries until state propagates from poller.
+   * AC2: Frontend transitions to the graph view on job completion.
+   * AGENT-CTX: The card list is replaced by EvidenceGraph (Milestone 2).
+   * EvidenceNode renders each item title — getAllByText verifies all 10 nodes
+   * are present. @xyflow/react is mocked (see jest.config.js moduleNameMapper)
+   * so ReactFlow renders nodeTypes components into plain divs in jsdom.
    */
   const mockResults: EvidenceItem[] = Array(10).fill({ ...BASE_MOCK_ITEM });
   mockJobFlow(mockResults);
@@ -207,6 +211,7 @@ test("renders result list with title and evidence type after job completes", asy
     expect(screen.getAllByText("Sotorasib in KRAS G12C NSCLC")).toHaveLength(10);
   });
 
+  // evidence_type badge rendered by EvidenceNode
   expect(screen.getAllByText("clinical trial")).toHaveLength(10);
 });
 
@@ -252,73 +257,80 @@ test("shows error when POST /jobs itself fails (network or 503)", async () => {
   expect(await screen.findByText(/job queue not configured/i)).toBeInTheDocument();
 });
 
-// ── Milestone 1: Structured card field tests (updated for async flow) ─────────
+// ── Milestone 1 + 2: Node field tests (EvidenceNode renders all card fields) ──
+// AGENT-CTX: Card list replaced by EvidenceGraph (Milestone 2). EvidenceNode
+// renders the same fields that the old card list rendered. Tests pass because
+// @xyflow/react is mocked — ReactFlow renders nodeTypes components into plain
+// divs, making EvidenceNode content queryable by findByText / queryByText.
 
-test("renders confidence_tier badge after job completes", async () => {
-  /**
-   * AC: Each result card displays confidence_tier.
-   * AGENT-CTX: Badge renders the raw tier label ("high") as its text content.
-   */
+test("renders confidence_tier badge in EvidenceNode after job completes", async () => {
   mockJobFlow([{ ...BASE_MOCK_ITEM, confidence_tier: "high" }]);
   render(<SearchPage />);
   submitSearch();
 
-  expect(await screen.findByText("high")).toBeInTheDocument();
+  // EvidenceNode renders "high confidence" — findByText uses partial match via regex
+  expect(await screen.findByText(/high confidence/i)).toBeInTheDocument();
 });
 
-test("renders effect_direction after job completes", async () => {
+test("renders effect_direction in NodeDrawer after clicking a node", async () => {
   /**
-   * AC: Each result card displays effect_direction.
+   * AGENT-CTX: effect_direction lives in NodeDrawer (detail panel), not in
+   * EvidenceNode (graph card). This test clicks the rendered node to open the
+   * drawer, then asserts on the direction field.
    */
   mockJobFlow([{ ...BASE_MOCK_ITEM, effect_direction: "supports" }]);
   render(<SearchPage />);
   submitSearch();
 
+  // Wait for graph to render, then click the evidence node
+  await screen.findByText("Sotorasib in KRAS G12C NSCLC");
+  fireEvent.click(screen.getAllByText("Sotorasib in KRAS G12C NSCLC")[0]);
+
   expect(await screen.findByText("supports")).toBeInTheDocument();
 });
 
-test("hides model_organism row when value is 'not reported'", async () => {
-  /**
-   * AC: model_organism field only shown when applicable.
-   */
+test("hides model_organism in NodeDrawer when value is 'not reported'", async () => {
   mockJobFlow([{ ...BASE_MOCK_ITEM, model_organism: "not reported", sample_size: "not reported" }]);
   render(<SearchPage />);
   submitSearch();
 
   await screen.findByText("Sotorasib in KRAS G12C NSCLC");
+  fireEvent.click(screen.getAllByText("Sotorasib in KRAS G12C NSCLC")[0]);
+
+  await screen.findByText(/direction/i); // drawer is open
   expect(screen.queryByText("not reported")).not.toBeInTheDocument();
 });
 
-test("shows model_organism row when value is populated", async () => {
-  /**
-   * AC: model_organism field shown when an organism is present.
-   */
+test("shows model_organism in NodeDrawer when value is populated", async () => {
   mockJobFlow([{ ...BASE_MOCK_ITEM, model_organism: "mouse", evidence_type: "animal model" }]);
   render(<SearchPage />);
   submitSearch();
 
+  await screen.findByText("Sotorasib in KRAS G12C NSCLC");
+  fireEvent.click(screen.getAllByText("Sotorasib in KRAS G12C NSCLC")[0]);
+
   expect(await screen.findByText("mouse")).toBeInTheDocument();
 });
 
-test("hides sample_size row when value is 'not reported'", async () => {
-  /**
-   * AC: sample_size field only shown when extractable.
-   */
+test("hides sample_size in NodeDrawer when value is 'not reported'", async () => {
   mockJobFlow([{ ...BASE_MOCK_ITEM, sample_size: "not reported", model_organism: "not reported" }]);
   render(<SearchPage />);
   submitSearch();
 
   await screen.findByText("Sotorasib in KRAS G12C NSCLC");
+  fireEvent.click(screen.getAllByText("Sotorasib in KRAS G12C NSCLC")[0]);
+
+  await screen.findByText(/direction/i); // drawer is open
   expect(screen.queryByText("not reported")).not.toBeInTheDocument();
 });
 
-test("shows sample_size row when value is populated", async () => {
-  /**
-   * AC: sample_size field shown when stated in the abstract.
-   */
+test("shows sample_size in NodeDrawer when value is populated", async () => {
   mockJobFlow([{ ...BASE_MOCK_ITEM, sample_size: "n=345" }]);
   render(<SearchPage />);
   submitSearch();
+
+  await screen.findByText("Sotorasib in KRAS G12C NSCLC");
+  fireEvent.click(screen.getAllByText("Sotorasib in KRAS G12C NSCLC")[0]);
 
   expect(await screen.findByText("n=345")).toBeInTheDocument();
 });

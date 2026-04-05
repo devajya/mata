@@ -43,15 +43,17 @@ async def fetch_abstracts(query: str, limit: int = 10) -> list[dict]:
         limit: Number of records to fetch (default 10).
 
     Returns:
-        List of dicts, each with keys: pmid (str), title (str), abstract (str).
+        List of dicts, each with keys: pmid (str), title (str), abstract (str),
+        publication_year (int | None).
         Records with no abstract in PubMed have abstract="" (empty string, not None).
+        publication_year is None when the year is absent or non-parseable.
         May return fewer than `limit` items if PubMed has fewer results.
 
     Raises:
         ValueError:    if query is empty or whitespace-only.
         RuntimeError:  if either Entrez HTTP call fails or XML cannot be parsed.
 
-    AGENT-CTX: Invariant — returned dicts ALWAYS contain all three keys (pmid, title, abstract).
+    AGENT-CTX: Invariant — returned dicts ALWAYS contain all four keys.
     AGENT-CTX: Invariant — abstract is ALWAYS a str, never None.
     These invariants are relied upon by the LLM classifier in llm.py.
     """
@@ -182,12 +184,14 @@ def _parse_pubmed_xml(xml_text: str) -> list[dict]:
         pmid = _extract_pmid(article)
         title = _extract_title(article)
         abstract = _extract_abstract(article)
+        publication_year = _extract_publication_year(article)
 
         results.append({
             "pmid": pmid,
             "title": title,
             # AGENT-CTX: abstract is always str here — _extract_abstract never returns None.
             "abstract": abstract,
+            "publication_year": publication_year,
         })
 
     return results
@@ -256,6 +260,33 @@ def _extract_abstract(article: ET.Element) -> str:
         parts.append(f"{label}: {text}" if label else text)
 
     return " ".join(parts)
+
+
+def _extract_publication_year(article: ET.Element) -> int | None:
+    """
+    Extract the publication year from a PubmedArticle XML element.
+
+    AGENT-CTX: Two XPath paths tried in order of reliability:
+      1. .//JournalIssue/PubDate/Year — standard journal publication date; present
+         in the vast majority of indexed articles.
+      2. .//ArticleDate/Year — electronic publication date; fallback for epub-only
+         records where JournalIssue/PubDate contains MedlineDate instead of Year.
+
+    AGENT-CTX: MedlineDate is deliberately NOT parsed. MedlineDate is a free-text
+    field (e.g. "2021 Jan-Feb", "2020 Spring") that requires regex to extract a year.
+    Parsing it would add fragility for rare cases; returning None is safer. Items
+    with publication_year=None are simply never grayed out by ChainPanel's filter.
+
+    Returns int (year) or None — never raises.
+    """
+    for xpath in (".//JournalIssue/PubDate/Year", ".//ArticleDate/Year"):
+        el = article.find(xpath)
+        if el is not None and el.text:
+            try:
+                return int(el.text.strip())
+            except ValueError:
+                pass
+    return None
 
 
 def _inner_text(el: ET.Element) -> str:

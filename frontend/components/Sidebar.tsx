@@ -20,6 +20,7 @@ interface SidebarProps {
   // it does not own the selection state. Selection is owned by the parent (page.tsx).
   activeJobId: string | null;
   onSelectJob: (job: JobListItem) => void;
+  onNewSearch: () => void;
 }
 
 /**
@@ -32,7 +33,7 @@ interface SidebarProps {
  *   - When auth is added, the jobs[] prop will be filtered by the backend;
  *     no changes to this component are needed.
  */
-export function Sidebar({ jobs, activeJobId, onSelectJob }: SidebarProps) {
+export function Sidebar({ jobs, activeJobId, onSelectJob, onNewSearch }: SidebarProps) {
   return (
     <aside
       aria-label="Search history"
@@ -46,18 +47,43 @@ export function Sidebar({ jobs, activeJobId, onSelectJob }: SidebarProps) {
         flexDirection: "column",
       }}
     >
-      <h2
+      <div
         style={{
-          margin: 0,
-          padding: "1rem",
-          fontSize: "0.875rem",
-          fontWeight: 600,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0.75rem 1rem",
           borderBottom: "1px solid #e0e0e0",
-          color: "#333",
         }}
       >
-        Previous Searches
-      </h2>
+        <h2
+          style={{
+            margin: 0,
+            fontSize: "0.875rem",
+            fontWeight: 600,
+            color: "#333",
+          }}
+        >
+          Previous Searches
+        </h2>
+        <button
+          onClick={onNewSearch}
+          title="Start a new search"
+          style={{
+            border: "1px solid #ccc",
+            background: "#fff",
+            cursor: "pointer",
+            borderRadius: 4,
+            padding: "0.2rem 0.5rem",
+            fontSize: "0.78rem",
+            color: "#333",
+            fontWeight: 600,
+            lineHeight: 1,
+          }}
+        >
+          + New
+        </button>
+      </div>
 
       {jobs.length === 0 ? (
         <p style={{ padding: "1rem", color: "#888", fontSize: "0.82rem", margin: 0 }}>

@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.confidence import ConfidenceEngine, SubjectTypeFactor
 from backend.db.jobs import create_job, get_job, get_job_filter, list_jobs
+from backend.graph import assign_layer
 from backend.db.models import (
     JobFilter,
     JobListItem,
@@ -230,6 +231,8 @@ async def search(
             model_organism=structured.model_organism,
             sample_size=structured.sample_size,
             confidence_tier=_engine.score(structured),
+            layer=assign_layer(structured.evidence_type),
+            publication_year=record.get("publication_year"),
         )
         for record, structured in zip(records, structured_results)
     ]
