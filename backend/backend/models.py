@@ -109,6 +109,17 @@ class EvidenceItem(BaseModel):
     sample_size: str = "not reported"
     confidence_tier: ConfidenceTier = "low"
 
+    # AGENT-CTX: Fields below are new in Milestone 2 (Graph View).
+    # layer — assigned deterministically by assign_layer() in graph.py, never by the LLM.
+    #   Default -1 (not 0): returning 0 would silently misclassify unknown types as
+    #   in-vitro evidence. -1 excludes the item from CHAIN_LAYER_ORDER and surfaces
+    #   the gap visually rather than hiding it.
+    # publication_year — extracted from PubMed XML by pubmed.py. None means the year
+    #   was absent or non-parseable; items with year=None are never grayed out by
+    #   ChainPanel's temporal filter.
+    layer: int = -1
+    publication_year: int | None = None
+
 
 class SearchResponse(BaseModel):
     query: str

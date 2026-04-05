@@ -16,8 +16,12 @@ services:
     # dev extras (pytest etc.) are intentionally excluded from production builds.
     buildCommand: pip install .
 
-    # AGENT-CTX: Must match the Procfile command. $PORT is injected by Render at runtime.
-    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    # AGENT-CTX: Runs both the ARQ worker and uvicorn in a single container so they share
+    # the same filesystem (and therefore the same ./mata.db SQLite file). The worker is
+    # backgrounded with & so the shell proceeds to start uvicorn. When uvicorn exits
+    # (redeploy, crash), the container exits and Render restarts both processes.
+    # Alternative for true multi-service: Render Disk (paid) + separate worker service.
+    startCommand: sh -c "arq backend.worker.WorkerSettings & uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
 
     # AGENT-CTX: Render free tier. No cost, but the service spins down after 15 minutes
     # of inactivity. First request after spin-down has a ~30s cold start delay.
@@ -44,3 +48,16 @@ services:
       # Defaults to "*" (allow all origins) when unset — acceptable until frontend URL is known.
       - key: ALLOWED_ORIGINS
         sync: false
+
+      # AGENT-CTX: Upstash Redis URL — required for the ARQ job queue.
+      # Format: rediss://default:<password>@<host>:<port>  (rediss:// = TLS)
+      # Set in the Render dashboard after creating a free Upstash database.
+      # Without this, POST /jobs returns 503 and the ARQ worker exits at startup.
+      - key: REDIS_URL
+        sync: false
+
+      # AGENT-CTX: SQLite DB path. Defaults to ./mata.db (relative to rootDir=backend).
+      # The web server and ARQ worker share this path (same container — see startCommand).
+      # File is ephemeral: lost on Render restart. Acceptable for demo.
+      - key: SQLITE_DB_PATH
+        value: ./mata.db

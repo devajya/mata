@@ -1,71 +1,199 @@
 """
 FastAPI application entry point.
 
-AGENT-CTX: Stateless by design for this slice — no DB, no session store.
-All state lives in PubMed and the LLM. Safe to scale horizontally on Render.
+AGENT-CTX: Milestone 3 adds async job endpoints (POST /jobs, GET /job/{id}, GET /jobs)
+and a lifespan that initialises SQLite + the ARQ Redis pool. GET /search is deprecated
+(see DEPRECATED comment below).
 
-AGENT-CTX: Milestone 1 change — extract_structured_evidence() replaces the
-old classify_evidence_type(). The LLM now returns a StructuredEvidence object
-(four fields) instead of a bare string. The ConfidenceEngine converts that
-into a ConfidenceTier and all fields are assembled into EvidenceItem for the
-API response. See confidence.py for the scoring pipeline and llm.py for the
-extraction function.
+AGENT-CTX: CORS now includes POST in allow_methods to support the new /jobs endpoint.
 """
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from arq import create_pool
+from arq.connections import RedisSettings
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.confidence import ConfidenceEngine, SubjectTypeFactor
+from backend.db.jobs import create_job, get_job, get_job_filter, list_jobs
+from backend.graph import assign_layer
+from backend.db.models import (
+    JobFilter,
+    JobListItem,
+    JobStatusResponse,
+    JobSubmitRequest,
+    JobSubmitResponse,
+)
+from backend.db.schema import get_db, init_db
 from backend.llm import extract_structured_evidence
 from backend.models import EvidenceItem, ErrorResponse, SearchResponse
 from backend.pubmed import fetch_abstracts
 
-# AGENT-CTX: App-level metadata used by Render's auto-generated /docs page.
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application startup / shutdown lifecycle.
+
+    AGENT-CTX: Startup order matters:
+      1. init_db() — creates SQLite tables (idempotent, safe on every start).
+      2. create_pool() — connects to Redis (Upstash in production). Only attempted
+         when REDIS_URL is set. Without it, arq_pool=None and POST /jobs returns 503.
+         This lets GET /health, GET /jobs, GET /job/{id} work without Redis configured,
+         which is useful in local dev before Redis is set up.
+
+    AGENT-CTX: Shutdown closes the ARQ pool gracefully. getattr guard handles the
+    edge case where startup raised before pool creation (arq_pool attribute absent).
+    """
+    await init_db()
+
+    redis_url = os.environ.get("REDIS_URL")
+    if redis_url:
+        app.state.arq_pool = await create_pool(RedisSettings.from_dsn(redis_url))
+    else:
+        # AGENT-CTX: arq_pool=None is a deliberate "not configured" sentinel.
+        # Assigning it here (not just leaving it absent) avoids AttributeError in
+        # the POST /jobs handler when REDIS_URL is unset.
+        app.state.arq_pool = None
+
+    yield
+
+    pool = getattr(app.state, "arq_pool", None)
+    if pool is not None:
+        await pool.close()
+
+
 app = FastAPI(
     title="MATA API",
-    version="0.2.0",
-    description="Drug target evidence aggregation — structured evidence extraction",
+    version="0.3.0",
+    description="Drug target evidence aggregation — async job pipeline",
+    lifespan=lifespan,
 )
 
-# AGENT-CTX: CORS allows all origins during development/staging.
-# In production set ALLOWED_ORIGINS env var to the exact Vercel URL
-# (e.g. "https://mata.vercel.app") to prevent cross-origin misuse.
-# Do NOT remove this middleware — frontend fetch() will silently fail without it.
+# AGENT-CTX: allow_methods now includes POST for /jobs endpoint.
+# Do NOT remove GET — health check, search, and job polling all use GET.
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
-# AGENT-CTX: Module-level ConfidenceEngine instance, constructed once at startup.
-# Registers SubjectTypeFactor as the sole scoring signal for this slice.
-# To add future factors (SampleSizeFactor, StudyDesignFactor, etc.) extend this
-# chain — no other code needs to change. See confidence.py for the Factor protocol.
-# Not a singleton by pattern, but effectively singleton by placement here.
-# If the engine ever needs runtime reconfiguration (e.g. per-request weights),
-# move construction inside the search handler — the engine.score() call is cheap.
+# AGENT-CTX: Module-level ConfidenceEngine instance — see original main.py docstring.
 _engine = (
     ConfidenceEngine()
     .register(SubjectTypeFactor())
 )
 
 
+# ── Health ─────────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 async def health() -> dict:
-    # AGENT-CTX: Render health check hits this endpoint (configured in render.yaml).
-    # Must return HTTP 200 or Render marks the deploy as failed.
-    # Keep this handler dependency-free so it never fails.
+    # AGENT-CTX: Render health check. Must stay dependency-free. Do not add DB or
+    # Redis checks here — if either is down the service should still return 200 so
+    # Render does not mark the deploy as failed.
     return {"status": "ok"}
 
 
+# ── Async job endpoints ────────────────────────────────────────────────────────
+
+@app.post(
+    "/jobs",
+    response_model=JobSubmitResponse,
+    status_code=202,
+    responses={
+        422: {"model": ErrorResponse, "description": "Missing or invalid query"},
+        503: {"model": ErrorResponse, "description": "Job queue not configured (REDIS_URL unset)"},
+    },
+)
+async def submit_job(
+    body: JobSubmitRequest,
+    request: Request,
+    db=Depends(get_db),
+    job_filter: JobFilter = Depends(get_job_filter),
+) -> JobSubmitResponse:
+    """
+    Submit a search query as a background job. Returns a job_id immediately.
+
+    Poll GET /job/{job_id} every 3 seconds to check status.
+
+    AGENT-CTX: user_id comes from job_filter — the auth extension point.
+    Today it is always None. When auth middleware is wired, job_filter.user_id
+    equals the JWT subject and the job is stored against that user.
+    """
+    if request.app.state.arq_pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Job queue not configured. Set the REDIS_URL environment variable.",
+        )
+    record = await create_job(db, body.query, user_id=job_filter.user_id)
+    # AGENT-CTX: enqueue_job args match run_search_job(ctx, job_id, query).
+    # ctx is injected by ARQ — do not pass it here.
+    await request.app.state.arq_pool.enqueue_job(
+        "run_search_job", record.job_id, body.query
+    )
+    return record
+
+
+@app.get(
+    "/job/{job_id}",
+    response_model=JobStatusResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Job not found"},
+    },
+)
+async def get_job_status(
+    job_id: str,
+    db=Depends(get_db),
+) -> JobStatusResponse:
+    """
+    Poll job status. Returns the full SearchResponse inline when status=complete.
+
+    AGENT-CTX: Frontend should stop polling when status is "complete" or "failed".
+    Both are terminal states — they will never transition to another state.
+    """
+    record = await get_job(db, job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return record
+
+
+@app.get(
+    "/jobs",
+    response_model=list[JobListItem],
+)
+async def list_all_jobs(
+    db=Depends(get_db),
+    job_filter: JobFilter = Depends(get_job_filter),
+) -> list[JobListItem]:
+    """
+    List all jobs for the sidebar history panel, newest first.
+
+    AGENT-CTX: job_filter controls user scoping — today returns all jobs (no auth).
+    When auth is wired, only the authenticated user's jobs are returned.
+    See db/jobs.py get_job_filter() for the override instructions.
+    """
+    return await list_jobs(db, job_filter)
+
+
+# ── Deprecated synchronous search ─────────────────────────────────────────────
+
+# AGENT-CTX: DEPRECATED — GET /search is superseded by POST /jobs + GET /job/{id}.
+# This endpoint will be removed in a future slice once the async pipeline is
+# confirmed stable in production.
+# To remove:
+#   1. Delete this handler and the fetch_abstracts / extract_structured_evidence imports.
+#   2. Remove the associated tests in backend/tests/test_search_endpoint.py.
+#   3. Bump the API version in app metadata above.
 @app.get(
     "/search",
     response_model=SearchResponse,
+    deprecated=True,
     responses={
         422: {"model": ErrorResponse, "description": "Missing or invalid query"},
         500: {"model": ErrorResponse, "description": "PubMed fetch failed"},
@@ -75,83 +203,36 @@ async def health() -> dict:
 async def search(
     query: str = Query(..., min_length=1, description="Drug target name, e.g. 'KRAS G12C'"),
 ) -> SearchResponse:
-    """
-    Search PubMed for evidence items related to a drug target and extract
-    structured evidence fields from each abstract.
-
-    Flow: esearch → efetch (PubMed) → asyncio.gather(extract × N) → score → SearchResponse
-    """
-    # ── Step 1: Fetch abstracts from PubMed ───────────────────────────────────
+    """[DEPRECATED] Synchronous search. Use POST /jobs + GET /job/{id} instead."""
     try:
-        # AGENT-CTX: limit=10 matches the original AC ("at least 10 abstracts").
-        # Groq free tier is 30 RPM — 10 concurrent extraction calls are within quota.
-        # Do NOT lower this below 10 without updating the AC and E2E test assertion.
         records = await fetch_abstracts(query, limit=10)
     except ValueError as e:
-        # AGENT-CTX: ValueError means empty query, but FastAPI's Query(min_length=1)
-        # should catch this before we get here. Mapped to 422 defensively in case
-        # the validation contract is relaxed in a future refactor.
         raise HTTPException(status_code=422, detail=str(e)) from e
     except RuntimeError as e:
-        # AGENT-CTX: RuntimeError from fetch_abstracts = PubMed HTTP/parse failure.
-        # 500 (not 502) — the fault is in our upstream data source, not the LLM.
         raise HTTPException(status_code=500, detail=f"PubMed fetch failed: {e}") from e
 
     if not records:
-        # AGENT-CTX: Valid query, zero PubMed results. Return empty list — not an error.
-        # Frontend renders "no results found" when results == [].
         return SearchResponse(query=query, results=[])
 
-    # ── Step 2: Extract structured evidence from all abstracts concurrently ────
-    # AGENT-CTX: asyncio.gather() runs all extract_structured_evidence() calls
-    # concurrently. extract_structured_evidence() uses asyncio.to_thread() internally
-    # (Groq SDK sync call), so each call dispatches to the thread pool executor.
-    # With limit=10 and Python's default pool (min(32, cpu+4) threads), 10 concurrent
-    # calls are well within capacity and reduce total latency from ~20s to ~3-5s.
-    # Groq free tier is 30 RPM — 10 concurrent calls are safe.
-    #
-    # AGENT-CTX: If rate-limit errors (429) appear in production, add an
-    # asyncio.Semaphore(N) here to cap concurrency. Do not add it now — premature
-    # optimisation for a demo that makes ≤1 search/minute.
-    #
-    # AGENT-CTX: When one coroutine raises, gather() immediately raises that exception
-    # to the caller — but the remaining in-flight tasks are NOT cancelled. They continue
-    # running unobserved in the thread pool until they complete or fail silently.
-    # For 10 short-lived Groq calls this is acceptable — they will finish within seconds
-    # and waste at most 9 quota tokens.
     try:
         structured_results = await asyncio.gather(
             *[extract_structured_evidence(r["title"], r["abstract"]) for r in records]
         )
     except RuntimeError as e:
-        # AGENT-CTX: RuntimeError from extract_structured_evidence = Groq API failure.
-        # 502 (Bad Gateway) signals the LLM is the failing dependency, not us.
-        # Note: parse failures inside extract_structured_evidence return safe defaults
-        # rather than raising — only actual API errors reach this handler.
         raise HTTPException(status_code=502, detail=f"LLM extraction failed: {e}") from e
 
-    # ── Step 3: Score confidence and assemble response items ──────────────────
-    # AGENT-CTX: zip(records, structured_results) is safe here because asyncio.gather()
-    # preserves input order — structured_results[i] corresponds to records[i].
-    #
-    # AGENT-CTX: _engine.score(structured) is synchronous and cheap (weighted average
-    # of factor scores). It runs in the event loop thread — no need for to_thread().
-    # The result is confidence_tier: ConfidenceTier ("high" | "medium" | "low").
     results = [
         EvidenceItem(
             pmid=record["pmid"],
             title=record["title"],
             abstract=record["abstract"],
-            # AGENT-CTX: All four LLM-extracted fields copied directly from StructuredEvidence.
-            # No transformation — the Pydantic model already validated them.
             evidence_type=structured.evidence_type,
             effect_direction=structured.effect_direction,
             model_organism=structured.model_organism,
             sample_size=structured.sample_size,
-            # AGENT-CTX: confidence_tier is engine-derived, not LLM-extracted.
-            # _engine.score() applies the registered factor pipeline to produce
-            # a ConfidenceTier bucket. See confidence.py for scoring logic.
             confidence_tier=_engine.score(structured),
+            layer=assign_layer(structured.evidence_type),
+            publication_year=record.get("publication_year"),
         )
         for record, structured in zip(records, structured_results)
     ]
