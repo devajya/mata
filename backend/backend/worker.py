@@ -182,7 +182,7 @@ async def run_search_job(ctx: dict, job_id: str, query: str) -> None:
             # can clean up its own bookkeeping for this job.
             await set_job_failed(
                 db, job_id,
-                "Search timed out after 300 seconds. Try a more specific query."
+                "Search timed out after 900 seconds. Try a more specific query."
             )
             raise
         except RuntimeError as e:
@@ -248,11 +248,14 @@ class WorkerSettings:
     In production (Render), REDIS_URL must be the Upstash TLS URL:
         rediss://default:<password>@<host>:<port>
 
-    AGENT-CTX: job_timeout=300s. With the Ollama semaphore fix, wall time for
-    CPU inference = extraction_concurrency × single_inference_time sequentially.
-    At concurrency=1 and ~30s/call: 10 calls = ~300s extraction + edge classification.
-    Raise job_timeout further if timeouts persist; check provider.py timeout_hint_s
-    for the per-provider estimate.
+    AGENT-CTX: job_timeout=900s for local Ollama CPU validation.
+    Worst case for 5 papers on CPU: 5 × 90s extraction + 180s edges = 630s.
+    900s = 3× safety margin so the full pipeline (extraction + edges + persist)
+    completes without interference. The user experience is slow (~10–15 min)
+    but acceptable for local validation given the async job model.
+    Reduce once extraction caching is implemented (chore/extraction-cache branch)
+    which will bring Ollama times down to 1–2 LLM calls regardless of paper count.
+    For Groq (production) this value is irrelevant — jobs complete in 10–35s.
 
     AGENT-CTX: keep_result_ms=0 disables ARQ's own result storage in Redis.
     Results are stored in SQLite instead (see module docstring). This prevents
@@ -263,6 +266,6 @@ class WorkerSettings:
     redis_settings = RedisSettings.from_dsn(
         os.environ.get("REDIS_URL", "redis://localhost:6379")
     )
-    job_timeout = 300
+    job_timeout = 900
     max_jobs = 10
     keep_result_ms = 0
