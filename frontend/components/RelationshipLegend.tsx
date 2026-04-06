@@ -1,24 +1,13 @@
 "use client";
 
 import { EdgeType } from "../types";
+import { EDGE_TYPE_STYLES } from "../lib/graphUtils";
 
-// AGENT-CTX: EDGE_STYLES moved here from mockData.ts (deleted in Chain Links milestone).
-// Defined inline in this file so RelationshipLegend has no external style dependency.
-// Any future agent adding a new EdgeType must add a corresponding entry here AND
-// update backend EdgeType Literal in models.py, edges.py _EDGE_SYSTEM_PROMPT,
-// and frontend EdgeType in types.ts. All four locations must stay in sync.
-const EDGE_STYLES: Record<EdgeType, { color: string; dash: string; label: string }> = {
-  supports:                   { color: "#2d6a4f", dash: "none",      label: "Supports" },
-  contradicts:                { color: "#c0392b", dash: "none",      label: "Contradicts" },
-  contradicts_methodological: { color: "#e67e22", dash: "4,2",      label: "Contradicts (method)" },
-  translates:                 { color: "#1a6faf", dash: "none",      label: "Translates" },
-  fails_to_translate:         { color: "#8e44ad", dash: "8,3",      label: "Fails to Translate" },
-  mechanistically_extends:    { color: "#16a085", dash: "6,3",      label: "Extends Mechanism" },
-  qualifies:                  { color: "#d4ac0d", dash: "4,2",      label: "Qualifies" },
-  combination_context:        { color: "#2980b9", dash: "2,2",      label: "Combination" },
-  resistance_link:            { color: "#c0392b", dash: "8,4,2,4", label: "Resistance" },
-  replicates:                 { color: "#6a3d9a", dash: "2,2",      label: "Replicates" },
-};
+// AGENT-CTX: EDGE_TYPE_STYLES is the single source of truth, defined in graphUtils.ts
+// so buildEdges() and this legend always stay in sync. Any future agent adding a new
+// EdgeType must update: graphUtils.ts EDGE_TYPE_STYLES, backend models.py EdgeType
+// Literal, edges.py _EDGE_SYSTEM_PROMPT, and frontend types.ts EdgeType.
+const EDGE_STYLES = EDGE_TYPE_STYLES;
 
 interface Props {
   visible: boolean;

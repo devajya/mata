@@ -20,7 +20,7 @@
  * chain is active (exclusive-visibility toggle in EvidenceGraph.tsx).
  */
 
-import { ChainMeta, EdgeResult, EvidenceItem, GraphEdgeData, GraphNodeData } from "../types";
+import { ChainMeta, EdgeResult, EdgeType, EvidenceItem, GraphEdgeData, GraphNodeData } from "../types";
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 
@@ -39,6 +39,24 @@ export const LAYER_NAMES: Record<number, string> = {
 };
 
 export const CHAIN_LAYER_ORDER = [0, 1, 2, 3];
+
+// AGENT-CTX: EDGE_TYPE_STYLES is the single source of truth for edge colours/dash
+// patterns. Exported so RelationshipLegend.tsx can render the legend from the same
+// data without duplicating it. Applied to React Flow edges in buildEdges() below.
+// markerEnd uses the plain-object form { type: "arrowclosed" } — React Flow accepts
+// string literals for MarkerType so no @xyflow/react import is needed here.
+export const EDGE_TYPE_STYLES: Record<EdgeType, { color: string; dash: string; label: string }> = {
+  supports:                   { color: "#2d6a4f", dash: "none",      label: "Supports" },
+  contradicts:                { color: "#c0392b", dash: "none",      label: "Contradicts" },
+  contradicts_methodological: { color: "#e67e22", dash: "4,2",       label: "Contradicts (method)" },
+  translates:                 { color: "#1a6faf", dash: "none",      label: "Translates" },
+  fails_to_translate:         { color: "#8e44ad", dash: "8,3",       label: "Fails to Translate" },
+  mechanistically_extends:    { color: "#16a085", dash: "6,3",       label: "Extends Mechanism" },
+  qualifies:                  { color: "#d4ac0d", dash: "4,2",       label: "Qualifies" },
+  combination_context:        { color: "#2980b9", dash: "2,2",       label: "Combination" },
+  resistance_link:            { color: "#c0392b", dash: "8,4,2,4",  label: "Resistance" },
+  replicates:                 { color: "#6a3d9a", dash: "2,2",       label: "Replicates" },
+};
 
 // AGENT-CTX: CHAIN_COLOURS wraps at 5 — intentional. More than 5 chains is rare
 // in practice (10 papers max per query → few components). Wrapping avoids
@@ -59,6 +77,8 @@ export interface GraphEdge {
   source: string;
   target: string;
   data: GraphEdgeData;
+  style:     { stroke: string; strokeDasharray?: string; strokeWidth: number };
+  markerEnd: { type: string; color: string; width: number; height: number };
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -156,20 +176,48 @@ function buildNodes(chainItems: EvidenceItem[], query: string): GraphNode[] {
 // defensive guard against cross-job PMIDs that shouldn't appear but might
 // if the backend result set changes between job creation and rendering.
 // chainIds is left [] here; buildChains() back-fills after BFS discovery.
+//
+// AGENT-CTX: Visual source/target may be swapped from semantic source/target.
+// EvidenceNode has its React Flow source handle on the RIGHT and target handle
+// on the LEFT — correct for a left-to-right layout. If the semantic source has
+// a higher layer (further right) than the semantic target, the edge would route
+// backwards (right-of-higher-layer → left-of-lower-layer), creating an ugly
+// reverse U-curve. Swapping the visual endpoints makes it route left→right.
+// The original semantic direction is preserved in data.edge_type and data.rationale.
 function buildEdges(nodes: GraphNode[], edgeResults: EdgeResult[]): GraphEdge[] {
-  const nodeIdSet = new Set(nodes.map((n) => n.id));
+  const nodeIdSet  = new Set(nodes.map((n) => n.id));
+  const layerById  = new Map(nodes.map((n) => [n.id, n.data.layer]));
   const edges: GraphEdge[] = [];
 
   for (const er of edgeResults) {
-    const sourceId = `evidence-${er.source_pmid}`;
-    const targetId = `evidence-${er.target_pmid}`;
+    const semanticSource = `evidence-${er.source_pmid}`;
+    const semanticTarget = `evidence-${er.target_pmid}`;
 
-    if (!nodeIdSet.has(sourceId) || !nodeIdSet.has(targetId)) continue;
+    if (!nodeIdSet.has(semanticSource) || !nodeIdSet.has(semanticTarget)) continue;
+
+    const sourceLayer = layerById.get(semanticSource) ?? 0;
+    const targetLayer = layerById.get(semanticTarget) ?? 0;
+
+    // Swap visually if edge goes right→left so React Flow routes it cleanly.
+    const [source, target] =
+      sourceLayer > targetLayer
+        ? [semanticTarget, semanticSource]
+        : [semanticSource, semanticTarget];
+
+    const edgeStyle = EDGE_TYPE_STYLES[er.edge_type] ?? EDGE_TYPE_STYLES.supports;
 
     edges.push({
       id:     `edge-${er.source_pmid}-${er.target_pmid}`,
-      source: sourceId,
-      target: targetId,
+      source,
+      target,
+      style: {
+        stroke:           edgeStyle.color,
+        strokeDasharray:  edgeStyle.dash === "none" ? undefined : edgeStyle.dash,
+        strokeWidth:      2,
+      },
+      // AGENT-CTX: plain-object markerEnd — React Flow accepts "arrowclosed" as a
+      // string literal for MarkerType without needing to import the enum.
+      markerEnd: { type: "arrowclosed", color: edgeStyle.color, width: 12, height: 12 },
       data: {
         chainIds:   [],          // populated by buildChains
         edge_type:  er.edge_type,

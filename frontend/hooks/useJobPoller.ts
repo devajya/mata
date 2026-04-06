@@ -8,21 +8,21 @@ import { JobStatusResponse } from "../types";
 // update both locations.
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-const POLL_INTERVAL_MS = 3000;
-// AGENT-CTX: MAX_POLLS caps the total polling window at ~3 minutes (60 × 3s).
-// If the worker crashes after marking a job "running" (e.g. ARQ timeout before
-// the CancelledError fix lands, OOM kill, or Render cold-start), the job stays
-// non-terminal in SQLite forever. Without this cap the frontend polls indefinitely.
-// After MAX_POLLS the hook emits a synthetic failed job so page.tsx surfaces a
-// readable error rather than leaving the user in a permanent loading state.
+// AGENT-CTX: 10s interval × 60 polls = 600s total window (~10 min).
+// Sized to exceed the ARQ job_timeout (900s worst-case; typical Groq jobs finish
+// in <30s). Longer interval reduces network noise vs the old 3s cadence.
+// If the worker crashes the job stays non-terminal in SQLite forever — MAX_POLLS
+// prevents indefinite polling. After MAX_POLLS a synthetic failed job is emitted
+// so page.tsx surfaces a readable error instead of leaving the user loading.
+const POLL_INTERVAL_MS = 10_000;
 const MAX_POLLS = 60;
 
 /**
- * Polls GET /job/{jobId} every 3 seconds until the job reaches a terminal state.
+ * Polls GET /job/{jobId} every 10 seconds until the job reaches a terminal state.
  *
  * AGENT-CTX: Design decisions:
  *   - First poll fires immediately (no initial delay) so status appears without
- *     waiting 3 seconds. Subsequent polls use setTimeout for spacing.
+ *     waiting 10 seconds. Subsequent polls use setTimeout for spacing.
  *   - Uses a `cancelled` flag (not AbortController) to handle unmount races:
  *     if a fetch is in-flight when jobId changes or the component unmounts,
  *     the response is ignored and no state update happens.

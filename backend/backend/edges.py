@@ -27,12 +27,11 @@ and keeps the two LLM call types (extraction vs edge classification) independent
 configurable (different max_tokens, different prompts, different models if needed).
 
 AGENT-CTX: Groq client for edge classification uses llama-3.1-8b-instant, same
-model as extraction. max_tokens=3000 (vs 500 for extraction) because the edge
-output JSON can be substantially larger: up to ~45 candidate pairs × ~60 tokens
-each. If 10 papers produce more edges than 3000 tokens can encode, edges are
-truncated by the model — _parse_edge_results() skips malformed entries gracefully.
-Consider increasing max_tokens or switching to a larger model if edge count is
-consistently truncated in production.
+model as extraction. max_tokens=1500 (vs 500 for extraction) — sized for ≤5
+papers (PUBMED_LIMIT=5): ~10 comparable pairs × ~60 tokens each = ~600 tokens,
+1500 gives comfortable headroom. Only comparable-pair papers are sent to the LLM
+(see compute_all_edges), so the prompt is smaller than the full paper list.
+Raise to 3000 if PUBMED_LIMIT returns to 10.
 """
 
 import asyncio
@@ -330,10 +329,10 @@ async def _groq_edge_call(prompt: str) -> str:
                 {"role": "user", "content": prompt},
             ],
             response_format={"type": "json_object"},
-            # AGENT-CTX: max_tokens=3000 for edge output. Do not lower to 500
-            # (the extraction value) — edge JSON output is ~6× larger than
-            # per-paper extraction output.
-            max_tokens=3000,
+            # AGENT-CTX: max_tokens=1500. Sized for ≤5 papers (PUBMED_LIMIT=5):
+            # ~10 comparable pairs × ~60 tokens each = ~600 tokens; 1500 gives
+            # comfortable headroom. Raise if PUBMED_LIMIT returns to 10 (use 3000).
+            max_tokens=1500,
             temperature=0,
         )
     except GroqRateLimitError as e:
@@ -345,12 +344,13 @@ async def _groq_edge_call(prompt: str) -> str:
     return completion.choices[0].message.content or ""
 
 
+
 async def _ollama_edge_call(prompt: str) -> str:
     """
     Call Ollama for edge classification via httpx. Returns raw JSON string.
 
     AGENT-CTX: Parity with llm.py's _ollama_call — same endpoint, same
-    response_format. max_tokens=3000 (matches _groq_edge_call).
+    response_format. max_tokens=1500 (matches _groq_edge_call — see comment there).
     timeout=600.0 because Ollama serialises requests on CPU — see llm.py
     _ollama_call docstring for the full reasoning.
     """
@@ -362,7 +362,8 @@ async def _ollama_edge_call(prompt: str) -> str:
             {"role": "user", "content": prompt},
         ],
         "response_format": {"type": "json_object"},
-        "max_tokens": 3000,
+        # AGENT-CTX: Keep in sync with _groq_edge_call — see comment there.
+        "max_tokens": 1500,
         "temperature": 0,
     }
     try:
@@ -495,13 +496,24 @@ async def compute_all_edges(
     try:
         contexts = build_paper_contexts(items, structured_list)
 
-        # AGENT-CTX: Short-circuit if no pairs pass the comparability filter.
-        # This avoids burning a Groq API call when all papers are on unrelated
-        # topics or all have "not reported" interventions with non-adjacent layers.
-        if not _has_comparable_pairs(contexts):
+        # AGENT-CTX: Single O(n²) pass — find all PMIDs that appear in at least
+        # one comparable pair. Papers with no comparable partner are excluded from
+        # the LLM prompt, shrinking it substantially (e.g. 5 papers → often 3-4
+        # sent). This replaces the old two-pass approach (_has_comparable_pairs
+        # then classify_edges_via_llm(all contexts)) with one pass that both
+        # short-circuits and filters. Same asymptotic complexity; fewer LLM tokens.
+        pmids_in_pairs: set[str] = set()
+        for i, a in enumerate(contexts):
+            for b in contexts[i + 1:]:
+                if is_comparable(a, b):
+                    pmids_in_pairs.add(a.pmid)
+                    pmids_in_pairs.add(b.pmid)
+
+        if not pmids_in_pairs:
             return []
 
-        return await classify_edges_via_llm(contexts)
+        filtered_contexts = [c for c in contexts if c.pmid in pmids_in_pairs]
+        return await classify_edges_via_llm(filtered_contexts)
 
     except Exception as e:  # noqa: BLE001
         # AGENT-CTX: Broad catch — see docstring. Check logs for diagnosis.
