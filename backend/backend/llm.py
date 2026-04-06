@@ -78,11 +78,28 @@ _client: Groq | None = None
 # If you add a required field to StructuredEvidence, add it here too or _parse_structured()
 # will raise ValidationError on every LLM parse failure instead of falling back gracefully.
 # If you rename a Literal value (e.g. "review" → "narrative review"), update it here too.
+#
+# AGENT-CTX: The 7 new fields (cancer_type → key_claim) added in Milestone 5 (Chain Links).
+# These are used by edges.py for edge computation and are NOT copied to EvidenceItem.
+# All 11 keys must be present here because _SAFE_DEFAULTS is used when JSON is entirely
+# unparseable (json.JSONDecodeError path) — StructuredEvidence(**_SAFE_DEFAULTS) must
+# construct without error. For partial-JSON failures (ValidationError path), the 7 new
+# fields default to "not reported" via their Pydantic model defaults, but complete
+# fallback always comes from this dict.
 _SAFE_DEFAULTS: dict[str, str] = {
+    # Original 4 fields (Milestone 1)
     "evidence_type": "review",
     "effect_direction": "neutral",
     "model_organism": "not reported",
     "sample_size": "not reported",
+    # New fields (Milestone 5 — Chain Links)
+    "cancer_type": "not reported",
+    "intervention": "not reported",
+    "primary_endpoint": "not reported",
+    "effect_size": "not reported",
+    "mechanism_described": "not reported",
+    "resistance_findings": "not reported",
+    "key_claim": "not reported",
 }
 
 # AGENT-CTX: System prompt for JSON mode extraction.
@@ -92,12 +109,21 @@ _SAFE_DEFAULTS: dict[str, str] = {
 # defines classification rules to reduce ambiguous model output.
 # Do not shorten this prompt to save tokens — the classification rules are
 # necessary to keep edge cases (e.g. observational vs interventional human studies)
-# consistent. max_tokens=200 absorbs the prompt cost with headroom to spare.
+# consistent.
+#
+# AGENT-CTX: Milestone 5 (Chain Links) extended this prompt from 4 to 11 fields.
+# max_tokens raised from 200 to 500 accordingly (11 fields × ~30 tokens each + JSON
+# structure overhead ≈ 400 tokens; 500 gives comfortable headroom).
+# The 4 original fields are unchanged to preserve backward compatibility with any
+# cached results or tests that assert specific values on those fields.
+# The 7 new fields all use "not reported" as the absent-value sentinel — consistent
+# with the original fields' convention. Do not use null/None in the prompt; the
+# model would output JSON null which would fail Pydantic string validation.
 _SYSTEM_PROMPT = """\
 You are a biomedical evidence extractor. Given a paper title and abstract, \
 extract structured evidence fields and return them as a JSON object.
 
-Return a JSON object with exactly these four keys:
+Return a JSON object with exactly these eleven keys:
   "evidence_type": one of "animal model", "human genetics", "clinical trial", \
 "in vitro", "review"
   "effect_direction": one of "supports", "contradicts", "neutral"
@@ -106,11 +132,29 @@ or "not reported" if not applicable or not stated
   "sample_size": the sample size as stated in the abstract \
 (e.g. "n=345", "~200 patients", "3 independent experiments"), \
 or "not reported" if not stated
+  "cancer_type": the cancer or disease type studied \
+(e.g. "NSCLC", "PDAC", "CRC", "pan-cancer"), or "not reported"
+  "intervention": the drug, molecule, or genetic perturbation being studied \
+(e.g. "sotorasib", "KRAS G12C siRNA", "erlotinib + bevacizumab"), or "not reported"
+  "primary_endpoint": the primary outcome measured \
+(e.g. "IC50", "ORR", "tumor volume", "ERK phosphorylation", "OS"), or "not reported"
+  "effect_size": the quantitative result if explicitly stated \
+(e.g. "IC50 = 8nM", "ORR = 36%", "tumor regression 70%"), or "not reported"
+  "mechanism_described": the biological mechanism proposed or demonstrated \
+(e.g. "covalent GDP-state locking", "ERK suppression via SHP2", "SOS1 bypass"), \
+or "not reported"
+  "resistance_findings": any resistance mutations, bypass mechanisms, or acquired \
+resistance observations (e.g. "Y96D KRAS mutation", "MET amplification bypass"), \
+or "not reported"
+  "key_claim": a single sentence summarising the paper's central finding — \
+always provide this even for sparse abstracts; do not use "not reported"
 
 Classification rules:
   evidence_type — classify the primary study design:
     "clinical trial"  : interventional study in humans (RCT, Phase I/II/III, open-label)
-    "human genetics"  : study where genetic or genomic variation is the primary exposure (GWAS, Mendelian randomisation, sequencing, variant association, heritability analysis) — NOT general biomarker or clinical cohorts
+    "human genetics"  : study where genetic or genomic variation is the primary exposure \
+(GWAS, Mendelian randomisation, sequencing, variant association, heritability analysis) \
+— NOT general biomarker or clinical cohorts
     "animal model"    : in vivo non-human experiments (mouse, rat, zebrafish, etc.)
     "in vitro"        : cell lines, organoids, biochemical assays, computational models
     "review"          : systematic review, meta-analysis, narrative review, opinion piece
@@ -122,7 +166,11 @@ Classification rules:
 
   model_organism: use "not reported" for clinical trials and human genetics studies
     unless a model organism is explicitly co-mentioned
-  sample_size: use the exact phrasing from the abstract; if no explicit numeric sample size is stated, use 'not reported' do not infer, estimate, or use zero
+  sample_size: use the exact phrasing from the abstract; if no explicit numeric sample
+    size is stated, use "not reported" — do not infer, estimate, or use zero
+  effect_size: report only explicitly stated quantitative values; do not calculate or
+    infer — use "not reported" if no numeric result is given
+  key_claim: one sentence only; extract or paraphrase the main conclusion; never omit
 
 Never hallucinate values. Use "not reported" if information is absent or unclear.
 Return only the JSON object — no explanation, no preamble, no markdown fences."""
@@ -170,9 +218,11 @@ async def _groq_call(prompt: str) -> str:
     structured output. JSON mode is a hard requirement — do not remove it; without
     it the model may return free-text that fails json.loads() and triggers fallback.
 
-    AGENT-CTX: max_tokens=200. Minimum valid JSON response is ~40 tokens; 200 gives
-    headroom for longer sample_size strings. Previous value was 10 (single-label) —
-    must NOT be reverted. Groq does not charge extra for unused token budget.
+    AGENT-CTX: max_tokens=500. Raised from 200 in Milestone 5 (Chain Links) to
+    accommodate 11 output fields instead of 4. 11 fields × ~30 tokens each + JSON
+    structure ≈ 400 tokens; 500 gives comfortable headroom.
+    Previous value was 200 (4 fields); before that 10 (single-label) — do not revert.
+    Groq does not charge extra for unused token budget.
 
     AGENT-CTX: asyncio.to_thread() wraps the sync Groq call. See module docstring
     for why we use sync client + thread rather than AsyncGroq.
@@ -190,8 +240,8 @@ async def _groq_call(prompt: str) -> str:
             # Semantic correctness (correct keys, valid enum values) is enforced
             # by the prompt + _parse_structured() validation.
             response_format={"type": "json_object"},
-            # AGENT-CTX: max_tokens raised from 10 to 200 for JSON output. See above.
-            max_tokens=200,
+            # AGENT-CTX: max_tokens raised from 200 to 500 in Milestone 5. See above.
+            max_tokens=500,
             # AGENT-CTX: temperature=0 for deterministic, reproducible extraction.
             temperature=0,
         )
@@ -236,7 +286,9 @@ async def _ollama_call(prompt: str) -> str:
         # Both providers must behave identically so make dev and make dev-local produce
         # the same structured output. Do not remove or make provider-conditional.
         "response_format": {"type": "json_object"},
-        "max_tokens": 200,
+        # AGENT-CTX: max_tokens kept in sync with _groq_call — raised to 500 in M5.
+        # If _groq_call's max_tokens changes, update this too.
+        "max_tokens": 500,
         "temperature": 0,
     }
     try:
@@ -320,9 +372,9 @@ async def extract_structured_evidence(title: str, abstract: str) -> StructuredEv
         abstract: Full abstract text. May be empty string — model classifies from title alone.
 
     Returns:
-        StructuredEvidence with all four fields populated. Always a valid instance.
+        StructuredEvidence with all eleven fields populated. Always a valid instance.
         On LLM parse/validation failure: returns safe defaults (evidence_type="review",
-        effect_direction="neutral", model_organism="not reported", sample_size="not reported").
+        effect_direction="neutral", all string fields="not reported").
 
     Raises:
         RuntimeError: if the LLM API call fails (network, auth, rate limit).

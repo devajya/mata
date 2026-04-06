@@ -10,6 +10,7 @@ import { Sidebar } from "../components/Sidebar";
 import { useJobHistory } from "../hooks/useJobHistory";
 import { useJobPoller } from "../hooks/useJobPoller";
 import {
+  EdgeResult,
   EvidenceItem,
   JobListItem,
   JobSubmitResponse,
@@ -31,6 +32,10 @@ export default function SearchPage() {
   const [isSubmitting, setIsSubmitting]     = useState(false);
   const [activeJobId, setActiveJobId]       = useState<string | null>(null);
   const [results, setResults]               = useState<EvidenceItem[]>([]);
+  // AGENT-CTX: edges extracted from job.result.edges (added in Chain Links milestone).
+  // Defaults to [] so the graph renders without edges until a job completes.
+  // Uses ?? [] to handle pre-Chain-Links job records in SQLite that lack the edges field.
+  const [edges, setEdges]                   = useState<EdgeResult[]>([]);
   const [error, setError]                   = useState<string | null>(null);
   const [activeQuery, setActiveQuery]       = useState<string>("");
 
@@ -44,11 +49,15 @@ export default function SearchPage() {
     if (!job) return;
     if (job.status === "complete" && job.result) {
       setResults(job.result.results);
+      // AGENT-CTX: ?? [] handles old SQLite records (pre-Chain-Links) that have
+      // no edges key in their result_json blob — avoids undefined prop error.
+      setEdges(job.result.edges ?? []);
       setError(null);
       refreshHistory();
     } else if (job.status === "failed") {
       setError(job.error ?? "Search failed. Please try again.");
       setResults([]);
+      setEdges([]);
       refreshHistory();
     }
   }, [job]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -96,6 +105,7 @@ export default function SearchPage() {
 
   function handleNewSearch() {
     setResults([]);
+    setEdges([]);
     setError(null);
     setActiveJobId(null);
     setActiveQuery("");
@@ -113,6 +123,7 @@ export default function SearchPage() {
     if (item.status === "failed") {
       setActiveJobId(null);
       setError(item.error ?? "This search failed.");
+      setEdges([]);
       setActiveQuery(item.query);
       return;
     }
@@ -215,7 +226,7 @@ export default function SearchPage() {
             flex:1 + min-height:0 allow the graph canvas to fill remaining height. */}
         {results.length > 0 && !isLoading && (
           <div style={{ flex: 1, minHeight: 0 }}>
-            <EvidenceGraph items={results} query={activeQuery} />
+            <EvidenceGraph items={results} edges={edges} query={activeQuery} />
           </div>
         )}
 

@@ -14,6 +14,7 @@ from backend.pubmed import fetch_abstracts
 REQUIRED_KEYS = {"pmid", "title", "abstract"}
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_fetch_returns_at_least_10_abstracts():
     """
@@ -26,6 +27,7 @@ async def test_fetch_returns_at_least_10_abstracts():
         assert REQUIRED_KEYS.issubset(r.keys()), f"Record missing keys: {r.keys()}"
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_fetch_returns_correct_types():
     """All returned values must be strings (pmid, title, abstract)."""
@@ -36,6 +38,7 @@ async def test_fetch_returns_correct_types():
         assert isinstance(r["abstract"], str), "abstract must be str (empty string allowed)"
 
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_fetch_handles_empty_abstract_gracefully():
     """

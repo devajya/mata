@@ -34,11 +34,23 @@ from backend.models import StructuredEvidence
 
 # ── Shared fixtures ────────────────────────────────────────────────────────────
 
+# AGENT-CTX: MOCK_STRUCTURED includes all 11 StructuredEvidence fields (7 new in M5).
+# The 7 new fields default to "not reported" in the model, but we set them explicitly
+# here so that future readers can see the full expected shape without tracing defaults.
+# "not reported" for intervention means all MOCK_RECORDS are comparable via adjacent
+# layer rule — patching compute_all_edges in worker tests avoids a live LLM call.
 MOCK_STRUCTURED = StructuredEvidence(
     evidence_type="clinical trial",
     effect_direction="supports",
     model_organism="not reported",
     sample_size="not reported",
+    cancer_type="not reported",
+    intervention="not reported",
+    primary_endpoint="not reported",
+    effect_size="not reported",
+    mechanism_described="not reported",
+    resistance_findings="not reported",
+    key_claim="not reported",
 )
 
 MOCK_RECORDS = [
@@ -220,8 +232,14 @@ async def test_worker_marks_job_complete_on_success(worker_db_path):
         record = await create_job(db, "KRAS G12C")
         job_id = record.job_id
 
+    # AGENT-CTX: compute_all_edges is patched to [] here (and in all worker tests
+    # that mock fetch_abstracts). Without this patch, the real edge LLM is called:
+    # MOCK_RECORDS produce items all at layer 3 (clinical trial), so is_comparable()
+    # returns True for adjacent same-layer pairs → classify_edges_via_llm fires.
+    # We don't want real Groq calls in unit tests — patch it to [] (no edges).
     with patch("backend.worker.fetch_abstracts", return_value=MOCK_RECORDS), \
-         patch("backend.worker.extract_structured_evidence", return_value=MOCK_STRUCTURED):
+         patch("backend.worker.extract_structured_evidence", return_value=MOCK_STRUCTURED), \
+         patch("backend.worker.compute_all_edges", return_value=[]):
         await run_search_job({}, job_id, "KRAS G12C")
 
     async with aiosqlite.connect(worker_db_path) as db:
@@ -232,7 +250,58 @@ async def test_worker_marks_job_complete_on_success(worker_db_path):
     assert result.status == JobStatus.complete
     assert result.result is not None
     assert len(result.result.results) == 10
+    # AGENT-CTX: edges field is always present in SearchResponse (default []).
+    # Verify it is not None — empty list is the correct value when patched to [].
+    assert result.result.edges is not None
     assert result.error is None
+
+
+async def test_worker_stores_edges_in_job_result(worker_db_path):
+    """
+    AC-Edges: Edges returned by compute_all_edges are persisted in the job result
+    and retrievable via get_job().
+
+    AGENT-CTX: This is the primary acceptance-criteria test for M5 edge storage.
+    It verifies the full data path:
+      compute_all_edges → SearchResponse.edges → set_job_complete → result_json → get_job
+    The edge fields (type, source/target pmid, confidence) are asserted to confirm
+    the EdgeResult is not silently dropped or truncated during JSON serialisation.
+    """
+    from backend.db.jobs import create_job, get_job
+    from backend.models import EdgeResult
+    from backend.worker import run_search_job
+
+    mock_edge = EdgeResult(
+        source_pmid="12340001",
+        target_pmid="12340002",
+        edge_type="translates",
+        direction="A→B",
+        confidence=0.75,
+        rationale="In vitro finding translates to clinical trial result.",
+        confidence_factors=["+0.20 same intervention", "+0.15 same cancer type"],
+    )
+
+    async with aiosqlite.connect(worker_db_path) as db:
+        db.row_factory = aiosqlite.Row
+        record = await create_job(db, "KRAS G12C")
+        job_id = record.job_id
+
+    with patch("backend.worker.fetch_abstracts", return_value=MOCK_RECORDS), \
+         patch("backend.worker.extract_structured_evidence", return_value=MOCK_STRUCTURED), \
+         patch("backend.worker.compute_all_edges", return_value=[mock_edge]):
+        await run_search_job({}, job_id, "KRAS G12C")
+
+    async with aiosqlite.connect(worker_db_path) as db:
+        db.row_factory = aiosqlite.Row
+        result = await get_job(db, job_id)
+
+    assert result.status == JobStatus.complete
+    assert result.result is not None
+    assert len(result.result.edges) == 1
+    stored_edge = result.result.edges[0]
+    assert stored_edge.edge_type == "translates"
+    assert stored_edge.source_pmid == "12340001"
+    assert stored_edge.confidence == 0.75
 
 
 async def test_worker_marks_job_failed_on_pubmed_no_results(worker_db_path):
@@ -245,6 +314,8 @@ async def test_worker_marks_job_failed_on_pubmed_no_results(worker_db_path):
         record = await create_job(db, "xyzzy nonexistent target")
         job_id = record.job_id
 
+    # AGENT-CTX: No need to patch compute_all_edges here — empty records short-circuits
+    # before compute_all_edges is called (early return in the worker's empty-results branch).
     with patch("backend.worker.fetch_abstracts", return_value=[]):
         await run_search_job({}, job_id, "xyzzy nonexistent target")
 
@@ -270,6 +341,9 @@ async def test_worker_marks_job_failed_on_llm_failure(worker_db_path):
         record = await create_job(db, "KRAS G12C")
         job_id = record.job_id
 
+    # AGENT-CTX: extract_structured_evidence raises before compute_all_edges is called,
+    # so no compute_all_edges patch is needed — the exception propagates to the
+    # RuntimeError handler in run_search_job before reaching edge computation.
     with patch("backend.worker.fetch_abstracts", return_value=MOCK_RECORDS), \
          patch("backend.worker.extract_structured_evidence",
                side_effect=RuntimeError("Groq quota exceeded")):
@@ -310,7 +384,8 @@ async def test_worker_transitions_through_running_state(worker_db_path):
 
     with patch("backend.worker.set_job_running", side_effect=capturing), \
          patch("backend.worker.fetch_abstracts", return_value=MOCK_RECORDS), \
-         patch("backend.worker.extract_structured_evidence", return_value=MOCK_STRUCTURED):
+         patch("backend.worker.extract_structured_evidence", return_value=MOCK_STRUCTURED), \
+         patch("backend.worker.compute_all_edges", return_value=[]):
         await run_search_job({}, job_id, "KRAS G12C")
 
     assert "running" in observed_states

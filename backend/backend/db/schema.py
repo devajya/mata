@@ -45,6 +45,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 # the worker can write results while the web process reads job status simultaneously.
 _PRAGMA_WAL = "PRAGMA journal_mode=WAL;"
 
+# AGENT-CTX: busy_timeout tells SQLite to retry for up to N milliseconds when it
+# encounters a locked database (SQLITE_BUSY) instead of immediately raising
+# OperationalError. 5000ms covers the startup race where both the uvicorn process
+# and the ARQ worker call init_db() concurrently — one will wait rather than fail.
+# Without this, the second process to start always errors with "database is locked"
+# even though the lock is held for only a few milliseconds.
+_PRAGMA_BUSY_TIMEOUT = "PRAGMA busy_timeout=5000;"
 
 def _get_db_path() -> str:
     """Return DB file path, read from environment at call time."""
@@ -53,6 +60,9 @@ def _get_db_path() -> str:
 
 async def _create_tables(db: aiosqlite.Connection) -> None:
     """Create all tables. Idempotent — safe to call on every startup."""
+    # AGENT-CTX: busy_timeout must be set before WAL and before any writes so that
+    # the lock-retry behaviour applies to the CREATE TABLE statement itself.
+    await db.execute(_PRAGMA_BUSY_TIMEOUT)
     await db.execute(_PRAGMA_WAL)
     await db.execute(_CREATE_JOBS_TABLE)
     await db.commit()
@@ -77,7 +87,11 @@ async def get_db():
     in all repository functions. Do NOT remove — jobs.py _row_to_* helpers depend on it.
     AGENT-CTX: The connection closes automatically when the request completes.
     Do not cache this connection or share it across requests.
+    AGENT-CTX: busy_timeout applied here too — not just at init — so that concurrent
+    API requests (e.g. POST /jobs while worker is writing a result) retry on lock
+    rather than returning a 500 to the frontend.
     """
     async with aiosqlite.connect(_get_db_path()) as db:
         db.row_factory = aiosqlite.Row
+        await db.execute(_PRAGMA_BUSY_TIMEOUT)
         yield db

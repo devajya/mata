@@ -21,7 +21,7 @@
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import SearchPage from "../app/page";
-import { EvidenceItem, JobListItem, JobStatusResponse } from "../types";
+import { EdgeResult, EvidenceItem, JobListItem, JobStatusResponse } from "../types";
 
 // ── Shared fixtures ───────────────────────────────────────────────────────────
 
@@ -58,7 +58,10 @@ function mockJobFlow(
     job_id: TEST_JOB_ID,
     query: "KRAS G12C",
     status: "complete",
-    result: { query: "KRAS G12C", results: items },
+    // AGENT-CTX: edges: [] here because EvidenceGraph expects SearchResponse.edges
+    // (added in Chain Links milestone). Pre-existing test records lacked this field;
+    // the ?? [] guard in page.tsx handles real old records, but mocks must be explicit.
+    result: { query: "KRAS G12C", results: items, edges: [] as EdgeResult[] },
     error: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -351,6 +354,50 @@ test("shows 'No searches yet' when history is empty", async () => {
    */
   render(<SearchPage />);
   expect(await screen.findByText(/no searches yet/i)).toBeInTheDocument();
+});
+
+test("renders graph when job result includes edges", async () => {
+  /**
+   * AGENT-CTX: Verifies that the SearchResponse.edges field is consumed by page.tsx
+   * and passed to EvidenceGraph without errors. With two items and one edge between
+   * them, the graph should render (no crash). React Flow canvas is mocked in
+   * jest.setup.ts so this tests the prop-flow path, not visual rendering.
+   */
+  const itemA: EvidenceItem = { ...BASE_MOCK_ITEM, pmid: "AAA", layer: 0, evidence_type: "in vitro" };
+  const itemB: EvidenceItem = { ...BASE_MOCK_ITEM, pmid: "BBB", layer: 3 };
+  const mockEdge: EdgeResult = {
+    source_pmid: "AAA", target_pmid: "BBB",
+    edge_type: "translates", direction: "A→B",
+    confidence: 0.8, rationale: "In vitro to clinical.",
+    confidence_factors: [], flag: null,
+  };
+
+  const completedJob: JobStatusResponse = {
+    job_id: TEST_JOB_ID,
+    query: "KRAS G12C",
+    status: "complete",
+    result: { query: "KRAS G12C", results: [itemA, itemB], edges: [mockEdge] },
+    error: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  (global.fetch as jest.Mock).mockImplementation((url: string, options?: RequestInit) => {
+    const method = options?.method ?? "GET";
+    if (method === "POST" && (url as string).includes("/jobs"))
+      return Promise.resolve({ ok: true, json: async () => ({ job_id: TEST_JOB_ID, query: "KRAS G12C", status: "pending", created_at: new Date().toISOString() }) });
+    if (method === "GET" && (url as string).includes(`/job/${TEST_JOB_ID}`))
+      return Promise.resolve({ ok: true, json: async () => completedJob });
+    return Promise.resolve({ ok: true, json: async () => [] });
+  });
+
+  render(<SearchPage />);
+  submitSearch("KRAS G12C");
+
+  // Graph container renders without crash once results arrive
+  await waitFor(() => {
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
 });
 
 test("sidebar shows submitted query after search", async () => {
