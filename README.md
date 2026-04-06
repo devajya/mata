@@ -8,6 +8,8 @@ MATA helps biopharma researchers assess the evidence chain for a drug target. En
 
 ## Current State and Active Constraints
 
+There's some obvious frontend changes incoming - retry on failed job, collapsible sidebar, settings, as well as all the mutli-tenant necessities as we move towards this being a more useful deployed app. Right now its best performance is local.
+
 The deployed version runs on CPU-only infrastructure (Render free tier). This has two direct consequences: paper count per query is capped at 5 to keep job completion time reasonable, and total job latency is higher than it should be. At 5 papers the pipeline is usable; at 10 it becomes slow enough to hurt the experience.
 
 The first time this became a hard constraint was when edge classification was added (Chain Links milestone). Edge computation requires a second LLM call that sees all papers together — on CPU with Groq rate limits, this added enough latency that reducing the paper cap from 10 to 5 was the only practical fix. It exposed that the current architecture processes papers sequentially in a single worker, which doesn't scale.
