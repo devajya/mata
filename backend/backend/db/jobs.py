@@ -138,6 +138,15 @@ async def list_jobs(
     return [_row_to_list_item(r) for r in rows]
 
 
+async def delete_job(db: aiosqlite.Connection, job_id: str) -> bool:
+    """
+    Delete a job record by id. Returns True if a row was deleted, False if not found.
+    """
+    async with db.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,)) as cur:
+        await db.commit()
+        return cur.rowcount > 0
+
+
 # ── FastAPI dependency ──────────────────────────────────────────────────────────
 
 async def get_job_filter() -> JobFilter:

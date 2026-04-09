@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { JobListItem, JobStatus } from "../types";
 
 // AGENT-CTX: STATUS_CHIP_COLOUR maps JobStatus → background colour.
@@ -21,6 +22,7 @@ interface SidebarProps {
   activeJobId: string | null;
   onSelectJob: (job: JobListItem) => void;
   onNewSearch: () => void;
+  onRetryJob: (job: JobListItem) => void;
 }
 
 /**
@@ -33,7 +35,45 @@ interface SidebarProps {
  *   - When auth is added, the jobs[] prop will be filtered by the backend;
  *     no changes to this component are needed.
  */
-export function Sidebar({ jobs, activeJobId, onSelectJob, onNewSearch }: SidebarProps) {
+export function Sidebar({ jobs, activeJobId, onSelectJob, onNewSearch, onRetryJob }: SidebarProps) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  if (collapsed) {
+    return (
+      <aside
+        aria-label="Search history"
+        style={{
+          width: 40,
+          flexShrink: 0,
+          borderRight: "1px solid #e0e0e0",
+          backgroundColor: "#fafafa",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          paddingTop: "0.5rem",
+          gap: "0.5rem",
+        }}
+      >
+        <button
+          onClick={() => setCollapsed(false)}
+          title="Expand sidebar"
+          aria-label="Expand search history sidebar"
+          style={{
+            border: "none",
+            background: "none",
+            cursor: "pointer",
+            padding: "0.25rem",
+            color: "#666",
+            fontSize: "1.25rem",
+            lineHeight: 1,
+          }}
+        >
+          ›
+        </button>
+      </aside>
+    );
+  }
+
   return (
     <aside
       aria-label="Search history"
@@ -56,16 +96,34 @@ export function Sidebar({ jobs, activeJobId, onSelectJob, onNewSearch }: Sidebar
           borderBottom: "1px solid #e0e0e0",
         }}
       >
-        <h2
-          style={{
-            margin: 0,
-            fontSize: "0.875rem",
-            fontWeight: 600,
-            color: "#333",
-          }}
-        >
-          Previous Searches
-        </h2>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <button
+            onClick={() => setCollapsed(true)}
+            title="Collapse sidebar"
+            aria-label="Collapse search history sidebar"
+            style={{
+              border: "none",
+              background: "none",
+              cursor: "pointer",
+              padding: "0.1rem 0.2rem",
+              fontSize: "1.25rem",
+              color: "#666",
+              lineHeight: 1,
+            }}
+          >
+            ‹
+          </button>
+          <h2
+            style={{
+              margin: 0,
+              fontSize: "0.875rem",
+              fontWeight: 600,
+              color: "#333",
+            }}
+          >
+            Previous Searches
+          </h2>
+        </div>
         <button
           onClick={onNewSearch}
           title="Start a new search"
@@ -110,7 +168,6 @@ export function Sidebar({ jobs, activeJobId, onSelectJob, onNewSearch }: Sidebar
                   margin: "0 0 0.35rem 0",
                   fontSize: "0.85rem",
                   fontWeight: 500,
-                  // Truncate long queries with ellipsis
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
@@ -119,7 +176,7 @@ export function Sidebar({ jobs, activeJobId, onSelectJob, onNewSearch }: Sidebar
                 {job.query}
               </p>
 
-              {/* Status chip + timestamp */}
+              {/* Status chip + retry button + timestamp */}
               <div style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
                 <span
                   style={{
@@ -135,6 +192,26 @@ export function Sidebar({ jobs, activeJobId, onSelectJob, onNewSearch }: Sidebar
                 >
                   {job.status}
                 </span>
+                {job.status === "failed" && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onRetryJob(job); }}
+                    title="Retry this search"
+                    aria-label={`Retry search: ${job.query}`}
+                    style={{
+                      border: "1px solid #ccc",
+                      background: "#fff",
+                      cursor: "pointer",
+                      borderRadius: 3,
+                      padding: "0.1rem 0.35rem",
+                      fontSize: "0.68rem",
+                      color: "#333",
+                      fontWeight: 600,
+                      lineHeight: 1,
+                    }}
+                  >
+                    ↺ Retry
+                  </button>
+                )}
                 <span style={{ fontSize: "0.7rem", color: "#888" }}>
                   {new Date(job.created_at).toLocaleTimeString([], {
                     hour: "2-digit",

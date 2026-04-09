@@ -103,6 +103,48 @@ export default function SearchPage() {
     }
   }
 
+  async function handleRetryJob(item: JobListItem) {
+    // Delete the failed job then submit a fresh one with the same query.
+    try {
+      await fetch(`${API_URL}/job/${item.job_id}`, { method: "DELETE" });
+    } catch {
+      // If the delete fails (network error, already gone), proceed anyway.
+    }
+    refreshHistory();
+
+    setIsSubmitting(true);
+    setError(null);
+    setResults([]);
+    setActiveJobId(null);
+
+    try {
+      const response = await fetch(`${API_URL}/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: item.query }),
+      });
+
+      if (!response.ok) {
+        let detail = `Request failed with status ${response.status}`;
+        try {
+          const body = await response.json();
+          if (body?.detail) detail = body.detail;
+        } catch { /* use generic message */ }
+        setError(detail);
+        return;
+      }
+
+      const data: JobSubmitResponse = await response.json();
+      setActiveQuery(item.query);
+      setActiveJobId(data.job_id);
+      refreshHistory();
+    } catch {
+      setError("Network error — could not reach the server.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   function handleNewSearch() {
     setResults([]);
     setEdges([]);
@@ -148,6 +190,7 @@ export default function SearchPage() {
         activeJobId={activeJobId}
         onSelectJob={handleSelectJob}
         onNewSearch={handleNewSearch}
+        onRetryJob={handleRetryJob}
       />
 
       {/* ── Main content ─────────────────────────────────────────────────── */}

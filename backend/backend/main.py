@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.confidence import ConfidenceEngine, SubjectTypeFactor
-from backend.db.jobs import create_job, get_job, get_job_filter, list_jobs
+from backend.db.jobs import create_job, delete_job, get_job, get_job_filter, list_jobs
 from backend.graph import assign_layer
 from backend.db.models import (
     JobFilter,
@@ -73,13 +73,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# AGENT-CTX: allow_methods now includes POST for /jobs endpoint.
+# AGENT-CTX: allow_methods includes DELETE for the DELETE /job/{job_id} endpoint.
 # Do NOT remove GET — health check, search, and job polling all use GET.
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -179,6 +179,14 @@ async def list_all_jobs(
     See db/jobs.py get_job_filter() for the override instructions.
     """
     return await list_jobs(db, job_filter)
+
+
+@app.delete("/job/{job_id}", status_code=204)
+async def delete_job_endpoint(job_id: str, db=Depends(get_db)) -> None:
+    """Delete a job record. Returns 204 on success, 404 if not found."""
+    deleted = await delete_job(db, job_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Job not found")
 
 
 # ── Deprecated synchronous search ─────────────────────────────────────────────
