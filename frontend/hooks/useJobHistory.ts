@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { JobListItem } from "../types";
-import { API_URL } from "../lib/api";
+import { fetchJobs } from "../lib/api";
 
 /**
  * Fetches and caches the job history list from GET /jobs.
@@ -34,9 +34,8 @@ export function useJobHistory(): {
 
   const refresh = useCallback(() => {
     setIsLoading(true);
-    fetch(`${API_URL}/jobs`)
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((data: JobListItem[]) => {
+    fetchJobs()
+      .then((data) => {
         setJobs(data);
         setError(null);
       })

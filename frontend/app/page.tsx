@@ -9,36 +9,8 @@ import { EvidenceGraph } from "../components/EvidenceGraph";
 import { Sidebar } from "../components/Sidebar";
 import { useJobHistory } from "../hooks/useJobHistory";
 import { useJobPoller } from "../hooks/useJobPoller";
-import {
-  EdgeResult,
-  EvidenceItem,
-  JobListItem,
-  JobSubmitResponse,
-} from "../types";
-import { API_URL } from "../lib/api";
-
-// ── API helpers ───────────────────────────────────────────────────────────────
-
-async function submitJob(query: string): Promise<JobSubmitResponse> {
-  const response = await fetch(`${API_URL}/jobs`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
-  });
-
-  if (!response.ok) {
-    let detail = `Request failed with status ${response.status}`;
-    try {
-      const body = await response.json();
-      if (body?.detail) detail = body.detail;
-    } catch {
-      // JSON parse failed — use the generic status message above.
-    }
-    throw new Error(detail);
-  }
-
-  return response.json();
-}
+import { EdgeResult, EvidenceItem, JobListItem } from "../types";
+import { deleteJob, submitJob } from "../lib/api";
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -105,11 +77,7 @@ export default function SearchPage() {
 
   async function handleRetryJob(item: JobListItem) {
     // Delete the failed job then submit a fresh one with the same query.
-    try {
-      await fetch(`${API_URL}/job/${item.job_id}`, { method: "DELETE" });
-    } catch {
-      // If the delete fails (network error, already gone), proceed anyway.
-    }
+    await deleteJob(item.job_id); // best-effort; never throws (see api.ts)
     refreshHistory();
 
     setIsSubmitting(true);

@@ -1,0 +1,47 @@
+name: Type Sync
+
+# AGENT-CTX: This workflow guards the implicit contract between backend Pydantic
+# enum types (models.py, db/models.py) and their hand-maintained TypeScript mirrors
+# (frontend/types.ts). It runs check_types_sync.py which uses typing.get_args() to
+# read the actual runtime-validated values and checks every one appears in types.ts.
+#
+# Trigger scope: only the four files that can create drift. A backend-only PR that
+# touches unrelated files (e.g. worker.py) does NOT run this check unnecessarily.
+# When adding a new tracked type, add its source file to the paths list here.
+
+on:
+  push:
+    paths:
+      - "backend/backend/models.py"
+      - "backend/backend/db/models.py"
+      - "frontend/types.ts"
+      - "backend/scripts/check_types_sync.py"
+  pull_request:
+    paths:
+      - "backend/backend/models.py"
+      - "backend/backend/db/models.py"
+      - "frontend/types.ts"
+      - "backend/scripts/check_types_sync.py"
+
+jobs:
+  type-sync:
+    name: Backend ↔ Frontend type sync
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # AGENT-CTX: Match the minimum Python version in backend/pyproject.toml.
+          # Bump this if requires-python is raised.
+          python-version: "3.10"
+
+      - name: Install backend package
+        # AGENT-CTX: Installs only the main dependencies (not [dev] extras) —
+        # pytest/pytest-asyncio are not needed for the type check. pip is used
+        # directly here rather than uv to avoid a separate uv install step in CI.
+        run: pip install -e "backend/" --quiet
+
+      - name: Check backend ↔ frontend type sync
+        run: python backend/scripts/check_types_sync.py

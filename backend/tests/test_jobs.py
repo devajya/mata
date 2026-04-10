@@ -287,9 +287,9 @@ async def test_worker_marks_job_complete_on_success(worker_db_path):
     # MOCK_RECORDS produce items all at layer 3 (clinical trial), so is_comparable()
     # returns True for adjacent same-layer pairs → classify_edges_via_llm fires.
     # We don't want real Groq calls in unit tests — patch it to [] (no edges).
-    with patch("backend.worker.fetch_abstracts", return_value=MOCK_RECORDS), \
-         patch("backend.worker.extract_structured_evidence", return_value=MOCK_STRUCTURED), \
-         patch("backend.worker.compute_all_edges", return_value=[]):
+    with patch("backend.pipeline.fetch_abstracts", return_value=MOCK_RECORDS), \
+         patch("backend.pipeline.extract_structured_evidence", return_value=MOCK_STRUCTURED), \
+         patch("backend.pipeline.compute_all_edges", return_value=[]):
         await run_search_job({}, job_id, "KRAS G12C")
 
     async with aiosqlite.connect(worker_db_path) as db:
@@ -336,9 +336,9 @@ async def test_worker_stores_edges_in_job_result(worker_db_path):
         record = await create_job(db, "KRAS G12C")
         job_id = record.job_id
 
-    with patch("backend.worker.fetch_abstracts", return_value=MOCK_RECORDS), \
-         patch("backend.worker.extract_structured_evidence", return_value=MOCK_STRUCTURED), \
-         patch("backend.worker.compute_all_edges", return_value=[mock_edge]):
+    with patch("backend.pipeline.fetch_abstracts", return_value=MOCK_RECORDS), \
+         patch("backend.pipeline.extract_structured_evidence", return_value=MOCK_STRUCTURED), \
+         patch("backend.pipeline.compute_all_edges", return_value=[mock_edge]):
         await run_search_job({}, job_id, "KRAS G12C")
 
     async with aiosqlite.connect(worker_db_path) as db:
@@ -366,7 +366,7 @@ async def test_worker_marks_job_failed_on_pubmed_no_results(worker_db_path):
 
     # AGENT-CTX: No need to patch compute_all_edges here — empty records short-circuits
     # before compute_all_edges is called (early return in the worker's empty-results branch).
-    with patch("backend.worker.fetch_abstracts", return_value=[]):
+    with patch("backend.pipeline.fetch_abstracts", return_value=[]):
         await run_search_job({}, job_id, "xyzzy nonexistent target")
 
     async with aiosqlite.connect(worker_db_path) as db:
@@ -394,8 +394,8 @@ async def test_worker_marks_job_failed_on_llm_failure(worker_db_path):
     # AGENT-CTX: extract_structured_evidence raises before compute_all_edges is called,
     # so no compute_all_edges patch is needed — the exception propagates to the
     # RuntimeError handler in run_search_job before reaching edge computation.
-    with patch("backend.worker.fetch_abstracts", return_value=MOCK_RECORDS), \
-         patch("backend.worker.extract_structured_evidence",
+    with patch("backend.pipeline.fetch_abstracts", return_value=MOCK_RECORDS), \
+         patch("backend.pipeline.extract_structured_evidence",
                side_effect=RuntimeError("Groq quota exceeded")):
         await run_search_job({}, job_id, "KRAS G12C")
 
@@ -433,9 +433,9 @@ async def test_worker_transitions_through_running_state(worker_db_path):
         job_id = record.job_id
 
     with patch("backend.worker.set_job_running", side_effect=capturing), \
-         patch("backend.worker.fetch_abstracts", return_value=MOCK_RECORDS), \
-         patch("backend.worker.extract_structured_evidence", return_value=MOCK_STRUCTURED), \
-         patch("backend.worker.compute_all_edges", return_value=[]):
+         patch("backend.pipeline.fetch_abstracts", return_value=MOCK_RECORDS), \
+         patch("backend.pipeline.extract_structured_evidence", return_value=MOCK_STRUCTURED), \
+         patch("backend.pipeline.compute_all_edges", return_value=[]):
         await run_search_job({}, job_id, "KRAS G12C")
 
     assert "running" in observed_states

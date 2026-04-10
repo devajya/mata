@@ -49,7 +49,7 @@ async def test_extract_returns_defaults_on_malformed_json(monkeypatch):
     monkeypatched (not the Groq client) because _raw_llm_call is the designated
     seam for test injection — see module docstring in llm.py.
     """
-    async def _bad_call(prompt: str) -> str:
+    async def _bad_call(prompt: str, max_tokens: int = 500) -> str:
         return "this is not json at all"
 
     monkeypatch.setattr("backend.llm._raw_llm_call", _bad_call)
@@ -68,7 +68,7 @@ async def test_extract_returns_defaults_on_empty_llm_response(monkeypatch):
     Empty string from LLM (e.g. Groq returns content=None → "") must fall back
     to safe defaults, not raise.
     """
-    async def _empty_call(prompt: str) -> str:
+    async def _empty_call(prompt: str, max_tokens: int = 500) -> str:
         return ""
 
     monkeypatch.setattr("backend.llm._raw_llm_call", _empty_call)
@@ -83,7 +83,7 @@ async def test_extract_returns_defaults_on_invalid_enum_value(monkeypatch):
     Valid JSON but with an evidence_type value not in the Literal — Pydantic
     ValidationError must trigger safe defaults, not an exception to the caller.
     """
-    async def _bad_enum_call(prompt: str) -> str:
+    async def _bad_enum_call(prompt: str, max_tokens: int = 500) -> str:
         return '{"evidence_type": "randomised controlled trial", "effect_direction": "supports", "model_organism": "not reported", "sample_size": "n=10"}'
 
     monkeypatch.setattr("backend.llm._raw_llm_call", _bad_enum_call)
@@ -101,7 +101,7 @@ async def test_extract_parses_valid_json_correctly(monkeypatch):
     Well-formed JSON with valid enum values must parse into a StructuredEvidence
     with all fields set correctly — no fallback.
     """
-    async def _good_call(prompt: str) -> str:
+    async def _good_call(prompt: str, max_tokens: int = 500) -> str:
         return (
             '{"evidence_type": "clinical trial", "effect_direction": "supports", '
             '"model_organism": "not reported", "sample_size": "n=345"}'
@@ -122,7 +122,7 @@ async def test_extract_parses_populated_organism_and_size(monkeypatch):
     """
     model_organism and sample_size are passed through verbatim when populated.
     """
-    async def _animal_call(prompt: str) -> str:
+    async def _animal_call(prompt: str, max_tokens: int = 500) -> str:
         return (
             '{"evidence_type": "animal model", "effect_direction": "supports", '
             '"model_organism": "BALB/c nude mouse", "sample_size": "n=24 animals"}'
@@ -141,7 +141,7 @@ async def test_extract_returns_defaults_on_missing_keys(monkeypatch):
     JSON object with missing required keys triggers ValidationError → safe defaults.
     All fields reset, not just the missing one.
     """
-    async def _incomplete_call(prompt: str) -> str:
+    async def _incomplete_call(prompt: str, max_tokens: int = 500) -> str:
         # Missing effect_direction and sample_size
         return '{"evidence_type": "in vitro", "model_organism": "not reported"}'
 

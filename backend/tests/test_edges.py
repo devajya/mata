@@ -348,7 +348,7 @@ class TestComputeAllEdges:
     @pytest.mark.asyncio
     async def test_returns_edge_list_on_success(self, monkeypatch):
         """When classify_edges_via_llm returns edges, compute_all_edges returns them."""
-        async def mock_llm(contexts):
+        async def mock_llm(contexts, max_tokens: int = 1500):
             return [MOCK_EDGE]
 
         monkeypatch.setattr(edges, "classify_edges_via_llm", mock_llm)
@@ -374,7 +374,7 @@ class TestComputeAllEdges:
         """
         call_count = 0
 
-        async def should_not_be_called(contexts):
+        async def should_not_be_called(contexts, max_tokens: int = 1500):
             nonlocal call_count
             call_count += 1
             return []

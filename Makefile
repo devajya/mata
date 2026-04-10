@@ -9,6 +9,7 @@ FRONTEND := frontend
 .PHONY: help \
         install \
         test test-local test-live test-e2e \
+        check-types \
         dev dev-local kill-dev \
         frontend-install frontend-test frontend-dev
 
@@ -35,6 +36,9 @@ help:
 	@echo "                      Requires: backend/.env.e2e with deployed URLs"
 	@echo ""
 	@echo "  make frontend-test  Jest tests for the Next.js frontend (15 tests, all mocked)"
+	@echo ""
+	@echo "  make check-types    Verify backend enums match frontend/types.ts (no API key needed)"
+	@echo "                      Checks: EvidenceType, EffectDirection, ConfidenceTier, EdgeType, JobStatus"
 	@echo ""
 	@echo "DEV SERVERS"
 	@echo "  make dev            All 3 processes: uvicorn + ARQ worker + Next.js (Groq)"
@@ -93,6 +97,15 @@ test-live:
 test-e2e:
 	@cd $(BACKEND) && set -a && . .env.e2e && set +a && \
 		.venv/bin/python -m pytest -m e2e tests/test_e2e.py -v -s
+
+# ── Type sync ─────────────────────────────────────────────────────────────────
+
+# AGENT-CTX: check-types enforces the backend↔frontend enum contract without a
+# running server or API key. Uses typing.get_args() on the actual Pydantic Literal
+# types — same values the runtime validates against. Mirrors what the GitHub Actions
+# type-sync.yml workflow runs in CI. Fast (<1s).
+check-types:
+	@cd $(BACKEND) && .venv/bin/python scripts/check_types_sync.py
 
 # ── Dev servers ────────────────────────────────────────────────────────────────
 
