@@ -32,15 +32,18 @@ depends on it being patchable.
 
 import asyncio
 import json
+import logging
 import os
 
 import httpx
-from groq import Groq
 from groq import APIError as GroqAPIError
 from groq import RateLimitError as GroqRateLimitError
 from pydantic import ValidationError
 
+from backend.llm_client import GROQ_MODEL, LLM_PROVIDER, OLLAMA_BASE_URL, get_groq_client
 from backend.models import StructuredEvidence, VALID_EVIDENCE_TYPES  # noqa: F401
+
+logger = logging.getLogger(__name__)
 
 # AGENT-CTX: VALID_EVIDENCE_TYPES is defined in models.py and imported here.
 # It is re-exported (noqa: F401) so test_llm.py can import it from backend.llm
@@ -48,23 +51,9 @@ from backend.models import StructuredEvidence, VALID_EVIDENCE_TYPES  # noqa: F40
 # this re-export can be removed. EvidenceType is no longer imported here — the
 # deprecated classify_evidence_type() wrapper that used it was removed in T6/T7.
 
-# AGENT-CTX: Model name in one place — change here only.
-# llama-3.1-8b-instant: fast (~200-400ms), sufficient for structured extraction.
-# Alternative for higher accuracy: "llama-3.3-70b-versatile" (slower, still free tier).
-_GROQ_MODEL = "llama-3.1-8b-instant"
-
-# AGENT-CTX: LLM_PROVIDER selects the backend: "groq" (default, cloud) or "ollama" (local).
-# Ollama is used for local development to avoid burning Groq quota.
-# Both paths use identical system prompts and response_format — the code does NOT
-# branch on provider after _raw_llm_call() returns. Ollama ≥0.1.34 is required
-# for response_format={"type":"json_object"} support. See MEMORY.md for setup.
-_LLM_PROVIDER: str = os.environ.get("LLM_PROVIDER", "groq").lower()
-_OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-
-# AGENT-CTX: Module-level Groq client, lazily initialised on first call.
-# None until GROQ_API_KEY is available at runtime. Lazy init prevents import-time
-# errors during pytest collection when the env var is not set.
-_client: Groq | None = None
+# AGENT-CTX: GROQ_MODEL, LLM_PROVIDER, OLLAMA_BASE_URL, and get_groq_client() live in
+# llm_client.py — imported above. Change the model name there; it propagates to both
+# extraction (this module) and edge classification (edges.py) automatically.
 
 # AGENT-CTX: Safe defaults returned when LLM output cannot be parsed or validated.
 # "review" is the least-specific evidence_type — never factually wrong as a fallback.
@@ -185,31 +174,7 @@ Abstract: {abstract}
 Extract the evidence fields as a JSON object."""
 
 
-def _get_client() -> Groq:
-    """
-    Lazily initialise and return the Groq sync client.
-
-    AGENT-CTX: Lazy init so importing this module does not immediately require
-    GROQ_API_KEY. The key is only read when extract_structured_evidence() is first
-    called. The Groq sync client is thread-safe — one instance shared across all
-    asyncio.to_thread() calls is correct. Do not create a new client per call.
-    """
-    global _client
-    if _client is not None:
-        return _client
-
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "GROQ_API_KEY environment variable is not set. "
-            "Get a free key from https://console.groq.com and add it to backend/.env"
-        )
-
-    _client = Groq(api_key=api_key)
-    return _client
-
-
-async def _groq_call(prompt: str) -> str:
+async def _groq_call(prompt: str, max_tokens: int = 500) -> str:
     """
     Call the Groq API in JSON mode and return the raw completion string.
 
@@ -218,20 +183,19 @@ async def _groq_call(prompt: str) -> str:
     structured output. JSON mode is a hard requirement — do not remove it; without
     it the model may return free-text that fails json.loads() and triggers fallback.
 
-    AGENT-CTX: max_tokens=500. Raised from 200 in Milestone 5 (Chain Links) to
-    accommodate 11 output fields instead of 4. 11 fields × ~30 tokens each + JSON
-    structure ≈ 400 tokens; 500 gives comfortable headroom.
-    Previous value was 200 (4 fields); before that 10 (single-label) — do not revert.
-    Groq does not charge extra for unused token budget.
+    AGENT-CTX: max_tokens comes from the caller (extract_structured_evidence), which
+    receives it from ProviderConfig via worker.py. Default 500 matches ProviderConfig
+    registry value (11 fields × ~30 tokens + overhead). Change it in provider.py,
+    not here.
 
     AGENT-CTX: asyncio.to_thread() wraps the sync Groq call. See module docstring
     for why we use sync client + thread rather than AsyncGroq.
     """
-    client = _get_client()
+    client = get_groq_client()
     try:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
-            model=_GROQ_MODEL,
+            model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -240,8 +204,7 @@ async def _groq_call(prompt: str) -> str:
             # Semantic correctness (correct keys, valid enum values) is enforced
             # by the prompt + _parse_structured() validation.
             response_format={"type": "json_object"},
-            # AGENT-CTX: max_tokens raised from 200 to 500 in Milestone 5. See above.
-            max_tokens=500,
+            max_tokens=max_tokens,
             # AGENT-CTX: temperature=0 for deterministic, reproducible extraction.
             temperature=0,
         )
@@ -257,7 +220,7 @@ async def _groq_call(prompt: str) -> str:
     return completion.choices[0].message.content or ""
 
 
-async def _ollama_call(prompt: str) -> str:
+async def _ollama_call(prompt: str, max_tokens: int = 500) -> str:
     """
     Call the Ollama local API via httpx and return the raw completion string.
 
@@ -275,9 +238,9 @@ async def _ollama_call(prompt: str) -> str:
     If _GROQ_MODEL is ever changed to a Groq-specific model ID, introduce a separate
     _OLLAMA_MODEL constant here rather than reusing _GROQ_MODEL.
     """
-    url = f"{_OLLAMA_BASE_URL}/v1/chat/completions"
+    url = f"{OLLAMA_BASE_URL}/v1/chat/completions"
     payload = {
-        "model": _GROQ_MODEL,
+        "model": GROQ_MODEL,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
@@ -286,9 +249,9 @@ async def _ollama_call(prompt: str) -> str:
         # Both providers must behave identically so make dev and make dev-local produce
         # the same structured output. Do not remove or make provider-conditional.
         "response_format": {"type": "json_object"},
-        # AGENT-CTX: max_tokens kept in sync with _groq_call — raised to 500 in M5.
-        # If _groq_call's max_tokens changes, update this too.
-        "max_tokens": 500,
+        # AGENT-CTX: max_tokens received from caller — same value as _groq_call.
+        # Change in provider.py, not here.
+        "max_tokens": max_tokens,
         "temperature": 0,
     }
     try:
@@ -311,7 +274,7 @@ async def _ollama_call(prompt: str) -> str:
         raise RuntimeError(f"Ollama request failed: {e}") from e
 
 
-async def _raw_llm_call(prompt: str) -> str:
+async def _raw_llm_call(prompt: str, max_tokens: int = 500) -> str:
     """
     Dispatch to the configured LLM provider and return the raw response string.
 
@@ -320,15 +283,17 @@ async def _raw_llm_call(prompt: str) -> str:
         monkeypatch.setattr(llm, "_raw_llm_call", async_fn_returning_bad_json)
     Tests that verify safe-default fallback can inject malformed JSON here without
     needing a live LLM. Do NOT inline this into extract_structured_evidence().
+    Test mocks must accept a max_tokens parameter (with a default) to match this
+    signature: `async def mock(prompt: str, max_tokens: int = 500) -> str: ...`
 
     AGENT-CTX: Both _groq_call and _ollama_call raise RuntimeError on API failure.
     Those errors propagate through here and are caught by the caller in main.py
     (mapped to HTTP 502). Parse errors are NOT raised here — _parse_structured()
     handles them with safe defaults.
     """
-    if _LLM_PROVIDER == "ollama":
-        return await _ollama_call(prompt)
-    return await _groq_call(prompt)
+    if LLM_PROVIDER == "ollama":
+        return await _ollama_call(prompt, max_tokens)
+    return await _groq_call(prompt, max_tokens)
 
 
 def _parse_structured(raw: str) -> StructuredEvidence:
@@ -349,21 +314,21 @@ def _parse_structured(raw: str) -> StructuredEvidence:
     default; "not reported" is preferable to a wrong-but-plausible value.
     """
     if not raw:
-        print("[llm.py] Empty LLM response — using safe defaults")
+        logger.warning("Empty LLM response — using safe defaults")
         return StructuredEvidence(**_SAFE_DEFAULTS)  # type: ignore[arg-type]
 
     try:
         parsed = json.loads(raw)
         return StructuredEvidence.model_validate(parsed)
     except json.JSONDecodeError as e:
-        print(f"[llm.py] JSON decode error: {e!r} | raw={raw[:200]!r} — using safe defaults")
+        logger.warning("JSON decode error: %r | raw=%r — using safe defaults", e, raw[:200])
     except ValidationError as e:
-        print(f"[llm.py] Schema validation error: {e!r} | raw={raw[:200]!r} — using safe defaults")
+        logger.warning("Schema validation error: %r | raw=%r — using safe defaults", e, raw[:200])
 
     return StructuredEvidence(**_SAFE_DEFAULTS)  # type: ignore[arg-type]
 
 
-async def extract_structured_evidence(title: str, abstract: str) -> StructuredEvidence:
+async def extract_structured_evidence(title: str, abstract: str, max_tokens: int = 500) -> StructuredEvidence:
     """
     Extract structured evidence fields from a PubMed abstract using Groq JSON mode.
 
@@ -391,7 +356,7 @@ async def extract_structured_evidence(title: str, abstract: str) -> StructuredEv
         # is intentionally empty, not accidentally omitted. Improves title-only accuracy.
         abstract=abstract if abstract else "(no abstract available)",
     )
-    raw = await _raw_llm_call(prompt)
+    raw = await _raw_llm_call(prompt, max_tokens)
     return _parse_structured(raw)
 
 

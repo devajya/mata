@@ -23,6 +23,7 @@ interface SidebarProps {
   onSelectJob: (job: JobListItem) => void;
   onNewSearch: () => void;
   onRetryJob: (job: JobListItem) => void;
+  historyError?: string | null;
 }
 
 /**
@@ -35,7 +36,7 @@ interface SidebarProps {
  *   - When auth is added, the jobs[] prop will be filtered by the backend;
  *     no changes to this component are needed.
  */
-export function Sidebar({ jobs, activeJobId, onSelectJob, onNewSearch, onRetryJob }: SidebarProps) {
+export function Sidebar({ jobs, activeJobId, onSelectJob, onNewSearch, onRetryJob, historyError }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   if (collapsed) {
@@ -143,7 +144,11 @@ export function Sidebar({ jobs, activeJobId, onSelectJob, onNewSearch, onRetryJo
         </button>
       </div>
 
-      {jobs.length === 0 ? (
+      {historyError ? (
+        <p role="alert" style={{ padding: "1rem", color: "#c00", fontSize: "0.82rem", margin: 0 }}>
+          {historyError}
+        </p>
+      ) : jobs.length === 0 ? (
         <p style={{ padding: "1rem", color: "#888", fontSize: "0.82rem", margin: 0 }}>
           No searches yet. Submit a query to get started.
         </p>

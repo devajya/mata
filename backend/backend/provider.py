@@ -87,15 +87,19 @@ class ProviderConfig:
 
 
 # AGENT-CTX: Registry of known providers. Keyed by the LLM_PROVIDER env var value.
-# To add a new provider: add one entry here. No other file needs to change for
-# concurrency/token tuning (llm.py and edges.py still hardcode max_tokens for now —
-# see the AGENT-CTX in those files about pulling from this registry in the future).
+# To add a new provider: add one entry here. max_tokens values are now read by
+# pipeline.py (via worker.py) so changing them here immediately takes effect —
+# no secondary edits needed in llm.py or edges.py.
+#
+# max_tokens_edge=1500: sized for PUBMED_LIMIT=5 (current default).
+#   ~10 comparable pairs × ~60 tokens each = ~600 tokens; 1500 gives headroom.
+#   Raise to 3000 if PUBMED_LIMIT is increased back to 10.
 _PROVIDER_CONFIGS: dict[str, ProviderConfig] = {
     "groq": ProviderConfig(
         extraction_concurrency=10,   # 30 RPM free tier; ~2s/call → safe
         edge_concurrency=5,          # single batch call in practice; headroom for future
         max_tokens_extraction=500,
-        max_tokens_edge=3000,
+        max_tokens_edge=1500,
         timeout_hint_s=120,          # ~20-40s expected for 10 concurrent Groq calls
     ),
     # AGENT-CTX: Ollama defaults assume CPU inference (the common case for local dev
@@ -106,7 +110,7 @@ _PROVIDER_CONFIGS: dict[str, ProviderConfig] = {
         extraction_concurrency=1,    # CPU default: sequential (see module docstring)
         edge_concurrency=1,
         max_tokens_extraction=500,
-        max_tokens_edge=3000,
+        max_tokens_edge=1500,
         timeout_hint_s=300,          # 10 × ~30s/call CPU estimate
     ),
 }

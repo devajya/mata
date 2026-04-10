@@ -1,25 +1,25 @@
 """
 FastAPI application entry point.
 
-AGENT-CTX: Milestone 3 adds async job endpoints (POST /jobs, GET /job/{id}, GET /jobs)
-and a lifespan that initialises SQLite + the ARQ Redis pool. GET /search is deprecated
-(see DEPRECATED comment below).
+AGENT-CTX: Milestone 3 — async job endpoints (POST /jobs, GET /job/{id}, GET /jobs)
+with a lifespan that initialises SQLite + the ARQ Redis pool.
 
-AGENT-CTX: CORS now includes POST in allow_methods to support the new /jobs endpoint.
+AGENT-CTX: CORS includes POST in allow_methods for /jobs and DELETE for /job/{id}.
 """
 
-import asyncio
 import os
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 
 from arq import create_pool
 from arq.connections import RedisSettings
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.confidence import ConfidenceEngine, SubjectTypeFactor
+from backend.logging_config import setup_logging
+from backend.graph import CHAIN_LAYER_ORDER, EVIDENCE_TYPE_TO_LAYER, LAYER_NAMES
 from backend.db.jobs import create_job, delete_job, get_job, get_job_filter, list_jobs
-from backend.graph import assign_layer
 from backend.db.models import (
     JobFilter,
     JobListItem,
@@ -28,9 +28,7 @@ from backend.db.models import (
     JobSubmitResponse,
 )
 from backend.db.schema import get_db, init_db
-from backend.llm import extract_structured_evidence
-from backend.models import EvidenceItem, ErrorResponse, SearchResponse
-from backend.pubmed import fetch_abstracts
+from backend.models import ErrorResponse
 
 
 @asynccontextmanager
@@ -48,6 +46,7 @@ async def lifespan(app: FastAPI):
     AGENT-CTX: Shutdown closes the ARQ pool gracefully. getattr guard handles the
     edge case where startup raised before pool creation (arq_pool attribute absent).
     """
+    setup_logging()
     await init_db()
 
     redis_url = os.environ.get("REDIS_URL")
@@ -68,13 +67,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MATA API",
-    version="0.3.0",
+    version="0.4.0",
     description="Drug target evidence aggregation — async job pipeline",
     lifespan=lifespan,
 )
 
 # AGENT-CTX: allow_methods includes DELETE for the DELETE /job/{job_id} endpoint.
-# Do NOT remove GET — health check, search, and job polling all use GET.
+# Do NOT remove GET — health check and job polling all use GET.
 _allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -83,11 +82,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# AGENT-CTX: Module-level ConfidenceEngine instance — see original main.py docstring.
-_engine = (
-    ConfidenceEngine()
-    .register(SubjectTypeFactor())
-)
+# ── Rate limiting ──────────────────────────────────────────────────────────────
+#
+# AGENT-CTX: This is a lightweight in-process safety net to prevent accidental or
+# malicious flooding of the job queue (which consumes Groq API quota and SQLite space).
+#
+# TODO: Move this to an API gateway (Cloudflare, AWS API GW, or similar) before
+# scaling beyond a single instance. Limitations of this approach:
+#   - State is in-memory and per-process — resets on restart, does not apply across
+#     multiple instances if the service is ever horizontally scaled.
+#   - The _ip_log dict grows unbounded with unique IPs over time (harmless at demo
+#     traffic volumes; add periodic cleanup or use Redis for production).
+#   - X-Forwarded-For is trusted as-is — can be spoofed by a caller that bypasses
+#     Render's proxy layer. An API gateway handles this correctly.
+
+_RATE_LIMIT_REQUESTS: int = int(os.environ.get("RATE_LIMIT_REQUESTS", "10"))
+_RATE_LIMIT_WINDOW_S: int = int(os.environ.get("RATE_LIMIT_WINDOW_S", "60"))
+# Maps client IP → deque of request timestamps within the current window
+_ip_log: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _check_rate_limit(request: Request) -> None:
+    """
+    Raise HTTP 429 if the client IP has exceeded the per-window request limit.
+
+    Uses a sliding window: only timestamps within the last RATE_LIMIT_WINDOW_S
+    seconds are counted. Old entries are evicted in-place before each check.
+
+    AGENT-CTX: Prefer X-Forwarded-For (set by Render's edge proxy) over the raw
+    TCP client IP. Render always sets this header; request.client.host would give
+    the proxy's internal IP instead of the real caller. Split on comma and take
+    the leftmost value — that is the original client IP in standard proxy chains.
+    """
+    forwarded = request.headers.get("X-Forwarded-For")
+    ip = forwarded.split(",")[0].strip() if forwarded else (
+        request.client.host if request.client else "unknown"
+    )
+
+    now = time.time()
+    window_start = now - _RATE_LIMIT_WINDOW_S
+    log = _ip_log[ip]
+
+    # Evict timestamps that have aged out of the window
+    while log and log[0] < window_start:
+        log.popleft()
+
+    if len(log) >= _RATE_LIMIT_REQUESTS:
+        retry_after = int(log[0] + _RATE_LIMIT_WINDOW_S - now) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Rate limit exceeded: max {_RATE_LIMIT_REQUESTS} job submissions "
+                f"per {_RATE_LIMIT_WINDOW_S}s. Retry after {retry_after}s."
+            ),
+        )
+
+    log.append(now)
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
@@ -100,6 +150,67 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get(
+    "/health/worker",
+    responses={
+        503: {"model": ErrorResponse, "description": "Redis not configured or unreachable"},
+    },
+)
+async def health_worker(request: Request) -> dict:
+    """
+    Deep health check for the job queue subsystem.
+
+    Returns 200 only when the ARQ Redis pool is configured AND reachable.
+    Use this endpoint to diagnose worker failures that are invisible to /health.
+
+    AGENT-CTX: This endpoint is intentionally separate from /health. Render's
+    healthCheckPath must point to /health (always 200) so a Redis outage does
+    not cause Render to restart the web container in a loop. /health/worker is
+    for operator use — call it manually, in a monitoring script, or from a
+    separate uptime check that can tolerate 503 without triggering a redeploy.
+
+    Status values:
+      "ok"                  — pool configured and Redis responded to PING
+      "redis_not_configured" — REDIS_URL was not set at startup (arq_pool is None)
+      "redis_unreachable"   — pool exists but PING failed (Redis down or network error)
+    """
+    pool = getattr(request.app.state, "arq_pool", None)
+
+    if pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail="redis_not_configured: REDIS_URL was not set at startup. "
+                   "POST /jobs will return 503 — jobs cannot be enqueued.",
+        )
+
+    try:
+        await pool.ping()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"redis_unreachable: Redis PING failed — {exc}",
+        ) from exc
+
+    return {"status": "ok"}
+
+
+# ── Application metadata ──────────────────────────────────────────────────────
+
+@app.get("/meta")
+async def get_meta() -> dict:
+    """
+    Return static layer metadata so the frontend stays in sync with graph.py.
+
+    layer_names keys are JSON strings — the frontend converts back to numbers.
+    chain_layer_order is the authoritative evidence hierarchy sequence.
+    """
+    return {
+        "layer_names": {str(k): v for k, v in LAYER_NAMES.items()},
+        "chain_layer_order": CHAIN_LAYER_ORDER,
+        "evidence_type_to_layer": EVIDENCE_TYPE_TO_LAYER,
+    }
+
+
 # ── Async job endpoints ────────────────────────────────────────────────────────
 
 @app.post(
@@ -108,6 +219,7 @@ async def health() -> dict:
     status_code=202,
     responses={
         422: {"model": ErrorResponse, "description": "Missing or invalid query"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded — too many submissions"},
         503: {"model": ErrorResponse, "description": "Job queue not configured (REDIS_URL unset)"},
     },
 )
@@ -126,6 +238,8 @@ async def submit_job(
     Today it is always None. When auth middleware is wired, job_filter.user_id
     equals the JWT subject and the job is stored against that user.
     """
+    _check_rate_limit(request)
+
     if request.app.state.arq_pool is None:
         raise HTTPException(
             status_code=503,
@@ -187,62 +301,3 @@ async def delete_job_endpoint(job_id: str, db=Depends(get_db)) -> None:
     deleted = await delete_job(db, job_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Job not found")
-
-
-# ── Deprecated synchronous search ─────────────────────────────────────────────
-
-# AGENT-CTX: DEPRECATED — GET /search is superseded by POST /jobs + GET /job/{id}.
-# This endpoint will be removed in a future slice once the async pipeline is
-# confirmed stable in production.
-# To remove:
-#   1. Delete this handler and the fetch_abstracts / extract_structured_evidence imports.
-#   2. Remove the associated tests in backend/tests/test_search_endpoint.py.
-#   3. Bump the API version in app metadata above.
-@app.get(
-    "/search",
-    response_model=SearchResponse,
-    deprecated=True,
-    responses={
-        422: {"model": ErrorResponse, "description": "Missing or invalid query"},
-        500: {"model": ErrorResponse, "description": "PubMed fetch failed"},
-        502: {"model": ErrorResponse, "description": "LLM extraction failed"},
-    },
-)
-async def search(
-    query: str = Query(..., min_length=1, description="Drug target name, e.g. 'KRAS G12C'"),
-) -> SearchResponse:
-    """[DEPRECATED] Synchronous search. Use POST /jobs + GET /job/{id} instead."""
-    try:
-        records = await fetch_abstracts(query, limit=10)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=f"PubMed fetch failed: {e}") from e
-
-    if not records:
-        return SearchResponse(query=query, results=[])
-
-    try:
-        structured_results = await asyncio.gather(
-            *[extract_structured_evidence(r["title"], r["abstract"]) for r in records]
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=f"LLM extraction failed: {e}") from e
-
-    results = [
-        EvidenceItem(
-            pmid=record["pmid"],
-            title=record["title"],
-            abstract=record["abstract"],
-            evidence_type=structured.evidence_type,
-            effect_direction=structured.effect_direction,
-            model_organism=structured.model_organism,
-            sample_size=structured.sample_size,
-            confidence_tier=_engine.score(structured),
-            layer=assign_layer(structured.evidence_type),
-            publication_year=record.get("publication_year"),
-        )
-        for record, structured in zip(records, structured_results)
-    ]
-
-    return SearchResponse(query=query, results=results)

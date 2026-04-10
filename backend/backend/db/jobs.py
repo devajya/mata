@@ -55,51 +55,69 @@ async def create_job(
         job_id=job_id,
         query=query,
         status=JobStatus.pending,
-        created_at=_ts(now),
+        created_at=_to_utc_datetime(now),
     )
 
 
-async def set_job_running(db: aiosqlite.Connection, job_id: str) -> None:
-    """Mark job as running. Called by the worker immediately on pickup."""
-    await db.execute(
-        "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ?",
-        (JobStatus.running.value, time.time(), job_id),
-    )
-    await db.commit()
+async def set_job_running(db: aiosqlite.Connection, job_id: str) -> bool:
+    """Mark job as running. Called by the worker immediately on pickup.
+
+    Returns True if the transition applied, False if the job was already in a
+    terminal state (complete or failed) and the update was skipped.
+    """
+    async with db.execute(
+        "UPDATE jobs SET status = ?, updated_at = ? WHERE job_id = ? AND status NOT IN (?, ?)",
+        (JobStatus.running.value, time.time(), job_id,
+         JobStatus.complete.value, JobStatus.failed.value),
+    ) as cur:
+        await db.commit()
+        return cur.rowcount > 0
 
 
 async def set_job_complete(
     db: aiosqlite.Connection,
     job_id: str,
     result: SearchResponse,
-) -> None:
-    """Mark job as complete and persist the serialised SearchResponse."""
+) -> bool:
+    """Mark job as complete and persist the serialised SearchResponse.
+
+    Returns True if the transition applied, False if the job was already in a
+    terminal state and the update was skipped.
+    """
     # AGENT-CTX: model_dump_json() (Pydantic v2) produces compact JSON.
     # Deserialised on read via SearchResponse.model_validate_json().
-    await db.execute(
+    async with db.execute(
         """
         UPDATE jobs SET status = ?, result_json = ?, updated_at = ?
-        WHERE job_id = ?
+        WHERE job_id = ? AND status NOT IN (?, ?)
         """,
-        (JobStatus.complete.value, result.model_dump_json(), time.time(), job_id),
-    )
-    await db.commit()
+        (JobStatus.complete.value, result.model_dump_json(), time.time(), job_id,
+         JobStatus.complete.value, JobStatus.failed.value),
+    ) as cur:
+        await db.commit()
+        return cur.rowcount > 0
 
 
 async def set_job_failed(
     db: aiosqlite.Connection,
     job_id: str,
     error: str,
-) -> None:
-    """Mark job as failed with a human-readable error message."""
-    await db.execute(
+) -> bool:
+    """Mark job as failed with a human-readable error message.
+
+    Returns True if the transition applied, False if the job was already in a
+    terminal state and the update was skipped.
+    """
+    async with db.execute(
         """
         UPDATE jobs SET status = ?, error = ?, updated_at = ?
-        WHERE job_id = ?
+        WHERE job_id = ? AND status NOT IN (?, ?)
         """,
-        (JobStatus.failed.value, error, time.time(), job_id),
-    )
-    await db.commit()
+        (JobStatus.failed.value, error, time.time(), job_id,
+         JobStatus.complete.value, JobStatus.failed.value),
+    ) as cur:
+        await db.commit()
+        return cur.rowcount > 0
 
 
 # ── Read operations ─────────────────────────────────────────────────────────────
@@ -164,7 +182,7 @@ async def get_job_filter() -> JobFilter:
 
 # ── Private helpers ─────────────────────────────────────────────────────────────
 
-def _ts(unix: float) -> datetime:
+def _to_utc_datetime(unix: float) -> datetime:
     return datetime.fromtimestamp(unix, tz=timezone.utc)
 
 
@@ -178,8 +196,8 @@ def _row_to_status(row: aiosqlite.Row) -> JobStatusResponse:
         status=JobStatus(row["status"]),
         result=result,
         error=row["error"],
-        created_at=_ts(row["created_at"]),
-        updated_at=_ts(row["updated_at"]),
+        created_at=_to_utc_datetime(row["created_at"]),
+        updated_at=_to_utc_datetime(row["updated_at"]),
     )
 
 
@@ -189,6 +207,6 @@ def _row_to_list_item(row: aiosqlite.Row) -> JobListItem:
         query=row["query"],
         status=JobStatus(row["status"]),
         error=row["error"],
-        created_at=_ts(row["created_at"]),
-        updated_at=_ts(row["updated_at"]),
+        created_at=_to_utc_datetime(row["created_at"]),
+        updated_at=_to_utc_datetime(row["updated_at"]),
     )
