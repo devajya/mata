@@ -20,11 +20,11 @@ AGENT-CTX: compute_all_edges() is the public entry point (called by worker.py).
 It never raises — all exceptions are caught and returned as an empty list so that
 the parent job still completes with results even if edge computation fails.
 
-AGENT-CTX: This module creates its own Groq client (not imported from llm.py).
-This mirrors the pattern in worker.py which creates its own ConfidenceEngine
-instance rather than importing main.py's. Separation prevents cross-module state
-and keeps the two LLM call types (extraction vs edge classification) independently
-configurable (different max_tokens, different prompts, different models if needed).
+AGENT-CTX: Groq client and provider constants (GROQ_MODEL, LLM_PROVIDER, OLLAMA_BASE_URL)
+are imported from backend.llm_client — shared with llm.py so a model name change
+propagates to both extraction and edge classification automatically.
+max_tokens differs between the two call types (1500 here vs 500 for extraction)
+so the individual call functions remain in their respective modules.
 
 AGENT-CTX: Groq client for edge classification uses llama-3.1-8b-instant, same
 model as extraction. max_tokens=1500 (vs 500 for extraction) — sized for ≤5
@@ -36,15 +36,16 @@ Raise to 3000 if PUBMED_LIMIT returns to 10.
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 
 import httpx
 from groq import APIError as GroqAPIError
-from groq import Groq
 from groq import RateLimitError as GroqRateLimitError
 from pydantic import ValidationError
 
+from backend.llm_client import GROQ_MODEL, LLM_PROVIDER, OLLAMA_BASE_URL, get_groq_client
 from backend.models import (
     EdgeResult,
     EvidenceItem,
@@ -52,16 +53,11 @@ from backend.models import (
     VALID_EDGE_TYPES,
 )
 
-# AGENT-CTX: Module-level Groq client, lazily initialised on first call.
-# Same lazy-init pattern as llm.py — prevents import-time errors during pytest
-# collection when GROQ_API_KEY is not set in the test environment.
-_client: Groq | None = None
+logger = logging.getLogger(__name__)
 
-# AGENT-CTX: Mirrors llm.py's provider selection. Both modules read from the
-# same env vars so switching LLM_PROVIDER affects both extraction AND edge calls.
-_LLM_PROVIDER: str = os.environ.get("LLM_PROVIDER", "groq").lower()
-_OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-_GROQ_MODEL = "llama-3.1-8b-instant"
+# AGENT-CTX: GROQ_MODEL, LLM_PROVIDER, OLLAMA_BASE_URL, and get_groq_client() live in
+# llm_client.py — imported above. Switching LLM_PROVIDER affects both extraction
+# (llm.py) and edge calls (this module) automatically.
 
 
 # ── Paper context ─────────────────────────────────────────────────────────────
@@ -288,51 +284,30 @@ def _format_contexts_for_prompt(contexts: list[PaperContext]) -> str:
     return json.dumps(papers, indent=2)
 
 
-def _get_client() -> Groq:
-    """
-    Lazily initialise and return the Groq sync client for edge classification.
-
-    AGENT-CTX: Separate client instance from llm.py — see module docstring.
-    Lazy init prevents import-time GROQ_API_KEY requirement during pytest collection.
-    """
-    global _client
-    if _client is not None:
-        return _client
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "GROQ_API_KEY environment variable is not set. "
-            "Required for edge classification. Add it to backend/.env"
-        )
-    _client = Groq(api_key=api_key)
-    return _client
-
-
-async def _groq_edge_call(prompt: str) -> str:
+async def _groq_edge_call(prompt: str, max_tokens: int = 1500) -> str:
     """
     Call Groq for edge classification. Returns raw JSON string.
 
-    AGENT-CTX: max_tokens=3000 (vs 500 for extraction) — edge output is much larger.
-    See module docstring for reasoning. If edges are consistently truncated in
-    production, increase this value or switch to llama-3.3-70b-versatile.
+    AGENT-CTX: max_tokens comes from the caller (classify_edges_via_llm), which
+    receives it from ProviderConfig via worker.py. Default 1500 matches the
+    ProviderConfig registry value, sized for ≤5 papers (PUBMED_LIMIT=5):
+    ~10 comparable pairs × ~60 tokens each = ~600 tokens; 1500 gives headroom.
+    Change it in provider.py, not here.
 
     AGENT-CTX: Same asyncio.to_thread() pattern as llm.py — sync Groq client in
     thread pool. See llm.py module docstring for why AsyncGroq is not used.
     """
-    client = _get_client()
+    client = get_groq_client()
     try:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
-            model=_GROQ_MODEL,
+            model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": _EDGE_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
             response_format={"type": "json_object"},
-            # AGENT-CTX: max_tokens=1500. Sized for ≤5 papers (PUBMED_LIMIT=5):
-            # ~10 comparable pairs × ~60 tokens each = ~600 tokens; 1500 gives
-            # comfortable headroom. Raise if PUBMED_LIMIT returns to 10 (use 3000).
-            max_tokens=1500,
+            max_tokens=max_tokens,
             temperature=0,
         )
     except GroqRateLimitError as e:
@@ -345,25 +320,24 @@ async def _groq_edge_call(prompt: str) -> str:
 
 
 
-async def _ollama_edge_call(prompt: str) -> str:
+async def _ollama_edge_call(prompt: str, max_tokens: int = 1500) -> str:
     """
     Call Ollama for edge classification via httpx. Returns raw JSON string.
 
     AGENT-CTX: Parity with llm.py's _ollama_call — same endpoint, same
-    response_format. max_tokens=1500 (matches _groq_edge_call — see comment there).
+    response_format. max_tokens comes from caller — see _groq_edge_call docstring.
     timeout=600.0 because Ollama serialises requests on CPU — see llm.py
     _ollama_call docstring for the full reasoning.
     """
-    url = f"{_OLLAMA_BASE_URL}/v1/chat/completions"
+    url = f"{OLLAMA_BASE_URL}/v1/chat/completions"
     payload = {
-        "model": _GROQ_MODEL,
+        "model": GROQ_MODEL,
         "messages": [
             {"role": "system", "content": _EDGE_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
         "response_format": {"type": "json_object"},
-        # AGENT-CTX: Keep in sync with _groq_edge_call — see comment there.
-        "max_tokens": 1500,
+        "max_tokens": max_tokens,
         "temperature": 0,
     }
     try:
@@ -394,18 +368,18 @@ def _parse_edge_results(raw: str) -> list[EdgeResult]:
     than skipping it. Skipped edges are logged with their raw content for debugging.
     """
     if not raw:
-        print("[edges.py] Empty LLM response — no edges produced")
+        logger.warning("Empty LLM response — no edges produced")
         return []
 
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as e:
-        print(f"[edges.py] JSON decode error: {e!r} | raw={raw[:200]!r}")
+        logger.warning("JSON decode error: %r | raw=%r", e, raw[:200])
         return []
 
     raw_edges = parsed.get("edges", [])
     if not isinstance(raw_edges, list):
-        print(f"[edges.py] 'edges' field is not a list: {type(raw_edges)}")
+        logger.warning("'edges' field is not a list: %s", type(raw_edges))
         return []
 
     results: list[EdgeResult] = []
@@ -420,12 +394,15 @@ def _parse_edge_results(raw: str) -> list[EdgeResult]:
             edge = EdgeResult.model_validate(raw_edge)
             results.append(edge)
         except (ValidationError, Exception) as e:
-            print(f"[edges.py] Skipping edge {i}: {e!r} | raw={str(raw_edge)[:200]!r}")
+            logger.warning("Skipping edge %d: %r | raw=%r", i, e, str(raw_edge)[:200])
 
     return results
 
 
-async def classify_edges_via_llm(contexts: list[PaperContext]) -> list[EdgeResult]:
+async def classify_edges_via_llm(
+    contexts: list[PaperContext],
+    max_tokens: int = 1500,
+) -> list[EdgeResult]:
     """
     Make a single batched LLM call to classify all edges between the given papers.
 
@@ -433,14 +410,17 @@ async def classify_edges_via_llm(contexts: list[PaperContext]) -> list[EdgeResul
         monkeypatch.setattr(edges, "classify_edges_via_llm", async_mock_fn)
     compute_all_edges() calls this by name (via module globals), so the monkeypatch
     correctly intercepts the call. Do NOT inline this into compute_all_edges().
+    Test mocks must accept a max_tokens parameter (with a default) to match this
+    signature: `async def mock(contexts, max_tokens: int = 1500) -> list[EdgeResult]: ...`
 
     AGENT-CTX: Raises RuntimeError on LLM API failure (rate limit, auth, network).
     compute_all_edges() catches this and returns [] — the job still completes.
     Parse errors are handled internally by _parse_edge_results() and return [].
 
     Args:
-        contexts: All paper contexts for this job (not just comparable pairs).
-                  Pre-filtering happened in compute_all_edges.
+        contexts:   Paper contexts to classify (pre-filtered by compute_all_edges).
+        max_tokens: Token budget for the LLM response. Comes from ProviderConfig
+                    via worker.py. Default 1500 matches the registry value.
 
     Returns:
         list[EdgeResult] — may be empty if no relationships found or parse failed.
@@ -451,10 +431,10 @@ async def classify_edges_via_llm(contexts: list[PaperContext]) -> list[EdgeResul
         + "\n\nIdentify all meaningful scientific relationships between these papers."
     )
 
-    if _LLM_PROVIDER == "ollama":
-        raw = await _ollama_edge_call(prompt)
+    if LLM_PROVIDER == "ollama":
+        raw = await _ollama_edge_call(prompt, max_tokens)
     else:
-        raw = await _groq_edge_call(prompt)
+        raw = await _groq_edge_call(prompt, max_tokens)
 
     return _parse_edge_results(raw)
 
@@ -464,6 +444,7 @@ async def classify_edges_via_llm(contexts: list[PaperContext]) -> list[EdgeResul
 async def compute_all_edges(
     items: list[EvidenceItem],
     structured_list: list[StructuredEvidence],
+    max_tokens: int = 1500,
 ) -> list[EdgeResult]:
     """
     Compute all semantic edges between evidence papers for a single job.
@@ -513,9 +494,9 @@ async def compute_all_edges(
             return []
 
         filtered_contexts = [c for c in contexts if c.pmid in pmids_in_pairs]
-        return await classify_edges_via_llm(filtered_contexts)
+        return await classify_edges_via_llm(filtered_contexts, max_tokens)
 
     except Exception as e:  # noqa: BLE001
         # AGENT-CTX: Broad catch — see docstring. Check logs for diagnosis.
-        print(f"[edges.py] compute_all_edges failed: {e!r} — returning empty edges")
+        logger.error("compute_all_edges failed: %r — returning empty edges", e)
         return []

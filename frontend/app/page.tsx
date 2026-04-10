@@ -15,12 +15,30 @@ import {
   JobListItem,
   JobSubmitResponse,
 } from "../types";
+import { API_URL } from "../lib/api";
 
-// AGENT-CTX: API_URL is the only place the backend URL is referenced in this file.
-// NEXT_PUBLIC_API_URL must be set in:
-//   - frontend/.env.local (local dev, points to http://localhost:8000)
-//   - Vercel environment variables (production, points to Render backend URL)
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// ── API helpers ───────────────────────────────────────────────────────────────
+
+async function submitJob(query: string): Promise<JobSubmitResponse> {
+  const response = await fetch(`${API_URL}/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+
+  if (!response.ok) {
+    let detail = `Request failed with status ${response.status}`;
+    try {
+      const body = await response.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      // JSON parse failed — use the generic status message above.
+    }
+    throw new Error(detail);
+  }
+
+  return response.json();
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -40,7 +58,7 @@ export default function SearchPage() {
   const [activeQuery, setActiveQuery]       = useState<string>("");
 
   const { job, isPolling }                  = useJobPoller(activeJobId);
-  const { jobs: historyJobs, refresh: refreshHistory } = useJobHistory();
+  const { jobs: historyJobs, refresh: refreshHistory, error: historyError } = useJobHistory();
 
   // AGENT-CTX: Watch the polled job and extract results/error when terminal.
   // refreshHistory() is called on terminal transitions so the sidebar chip
@@ -72,32 +90,40 @@ export default function SearchPage() {
     setActiveJobId(null);
 
     try {
-      const response = await fetch(`${API_URL}/jobs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: query.trim() }),
-      });
-
-      if (!response.ok) {
-        let detail = `Request failed with status ${response.status}`;
-        try {
-          const body = await response.json();
-          if (body?.detail) detail = body.detail;
-        } catch {
-          // JSON parse failed — use the generic status message above.
-        }
-        setError(detail);
-        return;
-      }
-
-      const data: JobSubmitResponse = await response.json();
+      const data = await submitJob(query.trim());
       setActiveQuery(query.trim());
       // AGENT-CTX: Setting activeJobId kicks off useJobPoller which polls every 3s.
       setActiveJobId(data.job_id);
       // Refresh the sidebar immediately so the new job appears as "pending".
       refreshHistory();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error — could not reach the server.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleRetryJob(item: JobListItem) {
+    // Delete the failed job then submit a fresh one with the same query.
+    try {
+      await fetch(`${API_URL}/job/${item.job_id}`, { method: "DELETE" });
     } catch {
-      setError("Network error — could not reach the server.");
+      // If the delete fails (network error, already gone), proceed anyway.
+    }
+    refreshHistory();
+
+    setIsSubmitting(true);
+    setError(null);
+    setResults([]);
+    setActiveJobId(null);
+
+    try {
+      const data = await submitJob(item.query);
+      setActiveQuery(item.query);
+      setActiveJobId(data.job_id);
+      refreshHistory();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error — could not reach the server.");
     } finally {
       setIsSubmitting(false);
     }
@@ -148,6 +174,8 @@ export default function SearchPage() {
         activeJobId={activeJobId}
         onSelectJob={handleSelectJob}
         onNewSearch={handleNewSearch}
+        onRetryJob={handleRetryJob}
+        historyError={historyError}
       />
 
       {/* ── Main content ─────────────────────────────────────────────────── */}

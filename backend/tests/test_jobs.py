@@ -17,8 +17,8 @@ AGENT-CTX: Redis isolation strategy:
   lifespan enters the pool-creation branch and hits the mock. No real Redis
   connection is attempted.
 
-AGENT-CTX: The existing tests in test_search_endpoint.py cover GET /search.
-Those tests (and the endpoint itself) are marked deprecated — see main.py.
+AGENT-CTX: GET /search and its test file (test_search_endpoint.py) were removed in v0.4.0.
+The async job pipeline is the sole search interface.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -28,7 +28,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from backend.db.models import JobStatus
-from backend.db.schema import _create_tables, init_db
+from backend.db.schema import init_db
 from backend.main import app
 from backend.models import StructuredEvidence
 
@@ -67,8 +67,8 @@ async def job_client(tmp_path, monkeypatch):
     AGENT-CTX: httpx's ASGITransport does NOT trigger ASGI lifespan events — it
     only handles HTTP scope. We therefore manually call init_db() and set
     app.state.arq_pool ourselves instead of relying on the lifespan. This matches
-    the pattern used by the existing tests in test_search_endpoint.py (which also
-    bypass lifespan). The pool is cleared in teardown to avoid cross-test bleed.
+    the pattern used throughout this file (bypass lifespan). The pool is cleared
+    in teardown to avoid cross-test bleed.
 
     AGENT-CTX: SQLITE_DB_PATH is set before init_db() so the temp file is used.
     _get_db_path() reads from os.environ at call time — the monkeypatch override
@@ -103,9 +103,9 @@ async def worker_db_path(tmp_path, monkeypatch):
     db_path = str(tmp_path / "test_worker.db")
     monkeypatch.setenv("SQLITE_DB_PATH", db_path)
     # Initialise tables so create_job / get_job work in tests.
-    async with aiosqlite.connect(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        await _create_tables(db)
+    # AGENT-CTX: init_db() reads SQLITE_DB_PATH at call time (monkeypatched above)
+    # and runs all pending migrations — equivalent to the old _create_tables call.
+    await init_db()
     return db_path
 
 
@@ -218,6 +218,56 @@ async def test_job_filter_user_id_none_returns_all_jobs(job_client):
 
     response = await job_client.get("/jobs")
     assert len(response.json()) == 2
+
+
+async def test_health_worker_returns_200_when_redis_reachable(job_client):
+    """
+    GET /health/worker → 200 when pool is configured and Redis PING succeeds.
+
+    AGENT-CTX: job_client fixture sets app.state.arq_pool to an AsyncMock.
+    We configure ping() to return True (mirrors the real aioredis response).
+    """
+    job_client.mock_pool.ping = AsyncMock(return_value=True)
+    response = await job_client.get("/health/worker")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+async def test_health_worker_returns_503_when_pool_is_none(tmp_path, monkeypatch):
+    """
+    GET /health/worker → 503 when REDIS_URL was not set (arq_pool is None).
+
+    AGENT-CTX: This simulates the common deploy misconfiguration where REDIS_URL
+    is absent. /health returns 200 in this state (keeping Render happy), but
+    /health/worker surfaces the problem so operators can diagnose stalled jobs.
+    """
+    monkeypatch.setenv("SQLITE_DB_PATH", str(tmp_path / "test_noop.db"))
+    from backend.db.schema import init_db as _init_db
+    await _init_db()
+
+    app.state.arq_pool = None
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        response = await ac.get("/health/worker")
+
+    assert response.status_code == 503
+    assert "redis_not_configured" in response.json()["detail"]
+
+
+async def test_health_worker_returns_503_when_redis_ping_fails(job_client):
+    """
+    GET /health/worker → 503 when pool exists but Redis PING raises.
+
+    AGENT-CTX: Simulates a Redis connection that was alive at startup but
+    dropped mid-session (e.g. Upstash free-tier eviction, network partition).
+    The detail message includes the exception text for operator diagnosis.
+    """
+    job_client.mock_pool.ping = AsyncMock(side_effect=Exception("Connection refused"))
+    response = await job_client.get("/health/worker")
+    assert response.status_code == 503
+    assert "redis_unreachable" in response.json()["detail"]
+    assert "Connection refused" in response.json()["detail"]
 
 
 # ── Worker tests [WORKER] ──────────────────────────────────────────────────────

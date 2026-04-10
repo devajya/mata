@@ -2,9 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { JobListItem } from "../types";
-
-// AGENT-CTX: API_URL duplicated from page.tsx — see useJobPoller.ts AGENT-CTX.
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_URL } from "../lib/api";
 
 /**
  * Fetches and caches the job history list from GET /jobs.
@@ -20,23 +18,31 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
  * The hook does NOT auto-refresh on an interval — history is only stale when
  * the user submits a new job or selects a running job that completes.
  *
- * AGENT-CTX: Errors are swallowed silently. A failed GET /jobs is not fatal —
- * the sidebar shows an empty list and the user can still submit new searches.
+ * AGENT-CTX: A failed GET /jobs is not fatal — the sidebar shows an error
+ * message and the user can still submit new searches. The error is cleared
+ * on the next successful fetch.
  */
 export function useJobHistory(): {
   jobs: JobListItem[];
   refresh: () => void;
   isLoading: boolean;
+  error: string | null;
 } {
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     setIsLoading(true);
     fetch(`${API_URL}/jobs`)
-      .then((res) => (res.ok ? res.json() : []))
-      .then((data: JobListItem[]) => setJobs(data))
-      .catch(() => {})
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data: JobListItem[]) => {
+        setJobs(data);
+        setError(null);
+      })
+      .catch(() => {
+        setError("Could not load search history.");
+      })
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -47,5 +53,5 @@ export function useJobHistory(): {
     refresh();
   }, [refresh]);
 
-  return { jobs, refresh, isLoading };
+  return { jobs, refresh, isLoading, error };
 }

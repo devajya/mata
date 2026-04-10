@@ -131,7 +131,7 @@ function submitSearch(query = "KRAS G12C"): void {
   fireEvent.change(screen.getByPlaceholderText(/drug target/i), {
     target: { value: query },
   });
-  fireEvent.click(screen.getByRole("button", { name: /search/i }));
+  fireEvent.click(screen.getByRole("button", { name: "Search" }));
 }
 
 // ── Hooks ──────────────────────────────────────────────────────────────────────
@@ -159,7 +159,7 @@ test("renders search input with correct placeholder", () => {
 
 test("renders search button", () => {
   render(<SearchPage />);
-  expect(screen.getByRole("button", { name: /search/i })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Search" })).toBeInTheDocument();
 });
 
 // ── Milestone 3: async job flow tests ────────────────────────────────────────

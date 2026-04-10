@@ -10,10 +10,11 @@ AGENT-CTX: Redis is the QUEUE only. Job state (status, result, error) lives in S
 This decouples result retrieval from ARQ's Redis key TTLs and enables the full history
 feature (GET /jobs) without Redis memory concerns.
 
-AGENT-CTX: run_search_job mirrors the pipeline in main.py's /search endpoint.
-Keep these two in sync — if you change evidence extraction or scoring in main.py,
-update this function too. The _engine instance here is intentionally separate from
-main.py's _engine (workers are separate processes with separate memory).
+AGENT-CTX: Pipeline separation — pipeline.run_pipeline() owns the domain logic
+(PubMed → extraction → scoring → edges → SearchResponse). run_search_job() is the
+error-handling shell that manages DB state transitions and maps exceptions to
+user-facing messages. The pipeline is in its own module (backend/pipeline.py) so
+it can be imported and tested independently of ARQ and SQLite.
 
 AGENT-CTX: To run the worker locally:
     arq backend.worker.WorkerSettings
@@ -47,46 +48,18 @@ import os
 import aiosqlite
 from arq.connections import RedisSettings
 
-from backend.confidence import ConfidenceEngine, SubjectTypeFactor
 from backend.db.jobs import set_job_complete, set_job_failed, set_job_running
 from backend.db.schema import _get_db_path, init_db
-from backend.edges import compute_all_edges
-from backend.graph import assign_layer
-from backend.llm import extract_structured_evidence
-from backend.models import EvidenceItem, SearchResponse
+from backend.logging_config import setup_logging
+from backend.pipeline import run_pipeline
 from backend.provider import get_provider_config, probe_ollama_concurrency
-from backend.pubmed import fetch_abstracts
 
 logger = logging.getLogger(__name__)
-
-# AGENT-CTX: Module-level engine mirrors main.py's _engine. Both must produce
-# identical confidence_tier values for the same StructuredEvidence input.
-# If you add/remove factors in main.py, update this line too.
-_engine = ConfidenceEngine().register(SubjectTypeFactor())
-
-
-async def _extract_with_semaphore(
-    sem: asyncio.Semaphore,
-    title: str,
-    abstract: str,
-):
-    """
-    Gate a single extract_structured_evidence() call behind a semaphore.
-
-    AGENT-CTX: The semaphore value comes from provider.py's ProviderConfig
-    (built once in startup(), stored in ctx). For Ollama CPU this is 1 —
-    making asyncio.gather() effectively sequential and preventing the
-    TimeoutError described in the module docstring. For Groq this is 10.
-    This function is a thin wrapper so monkeypatching extract_structured_evidence
-    in tests still works — only the semaphore logic lives here.
-    """
-    async with sem:
-        return await extract_structured_evidence(title, abstract)
 
 
 async def run_search_job(ctx: dict, job_id: str, query: str) -> None:
     """
-    Execute a search job: PubMed fetch → structured extraction → scoring → edge computation → persist.
+    ARQ job entry point: manage DB state transitions and delegate to _run_pipeline.
 
     AGENT-CTX: ctx carries the semaphores built in startup():
         ctx["extraction_semaphore"] — gates concurrent extract_structured_evidence calls
@@ -95,12 +68,10 @@ async def run_search_job(ctx: dict, job_id: str, query: str) -> None:
     the .get() calls fall back to a permissive Semaphore(10) so tests are not blocked.
 
     AGENT-CTX: Error strategy:
-      - Empty PubMed results → set_job_failed with user-facing message (not a system error)
-      - RuntimeError from fetch_abstracts → set_job_failed
-      - RuntimeError from extract_structured_evidence → set_job_failed
+      - ValueError from run_pipeline (empty PubMed) → set_job_failed with user message
+      - RuntimeError from run_pipeline (PubMed/LLM failure) → set_job_failed
+      - asyncio.CancelledError (ARQ job_timeout exceeded) → set_job_failed then re-raise
       - Any other Exception → set_job_failed (broad catch prevents worker process crash)
-      - Edge computation failures are caught INSIDE compute_all_edges() — they never
-        propagate here. A job with failed edges still completes with edges=[].
     All failures are stored in the DB so the frontend can surface a human-readable message.
     """
     # AGENT-CTX: Fall back to Semaphore(10) if ctx lacks the key — keeps unit tests
@@ -108,84 +79,49 @@ async def run_search_job(ctx: dict, job_id: str, query: str) -> None:
     extraction_sem: asyncio.Semaphore = ctx.get(
         "extraction_semaphore", asyncio.Semaphore(10)
     )
+    # AGENT-CTX: provider_config carries max_tokens values from ProviderConfig.
+    # Falls back to None in unit tests that call run_search_job() without startup().
+    # In that case, run_pipeline() uses its own parameter defaults (500 / 1500).
+    provider_config = ctx.get("provider_config")
+    max_tokens_extraction = provider_config.max_tokens_extraction if provider_config else 500
+    max_tokens_edge = provider_config.max_tokens_edge if provider_config else 1500
+
+    # AGENT-CTX: PUBMED_LIMIT defaults to 10 (production). Set to 5 in .env.local for
+    # Ollama CPU dev — halves extraction time without losing enough papers to prevent
+    # edge formation. Do not lower below 5: fewer papers reduces edge diversity.
+    limit = int(os.environ.get("PUBMED_LIMIT", "10"))
 
     async with aiosqlite.connect(_get_db_path()) as db:
         db.row_factory = aiosqlite.Row
-        await set_job_running(db, job_id)
+        if not await set_job_running(db, job_id):
+            logger.warning(
+                "set_job_running skipped for job %s — already in terminal state, aborting",
+                job_id,
+            )
+            return
 
         try:
-            # AGENT-CTX: PUBMED_LIMIT defaults to 10 (production). Set to 5 in
-            # .env.local for Ollama CPU dev — halves extraction time without losing
-            # enough papers to prevent edge formation between different evidence types.
-            # Do not lower below 5: fewer papers reduces edge diversity significantly.
-            limit = int(os.environ.get("PUBMED_LIMIT", "10"))
-            records = await fetch_abstracts(query, limit=limit)
-
-            if not records:
-                # AGENT-CTX: Domain outcome, not a system error — keep message user-facing.
-                await set_job_failed(
-                    db, job_id,
-                    f"PubMed returned no results for '{query}'. Try a broader search term.",
-                )
-                return
-
-            # AGENT-CTX: _extract_with_semaphore enforces provider-appropriate concurrency.
-            # For Ollama CPU (semaphore=1) this is effectively sequential — only one HTTP
-            # call is live at a time, preventing the connection-queue timeout described in
-            # the module docstring. For Groq (semaphore=10) it is fully concurrent.
-            # asyncio.gather() still owns coroutine scheduling; the semaphore only gates
-            # how many coroutines enter the actual HTTP call simultaneously.
-            structured_results = await asyncio.gather(
-                *[_extract_with_semaphore(extraction_sem, r["title"], r["abstract"])
-                  for r in records]
+            response = await run_pipeline(
+                query,
+                limit=limit,
+                extraction_sem=extraction_sem,
+                max_tokens_extraction=max_tokens_extraction,
+                max_tokens_edge=max_tokens_edge,
             )
-
-            results = [
-                EvidenceItem(
-                    pmid=record["pmid"],
-                    title=record["title"],
-                    abstract=record["abstract"],
-                    evidence_type=structured.evidence_type,
-                    effect_direction=structured.effect_direction,
-                    model_organism=structured.model_organism,
-                    sample_size=structured.sample_size,
-                    confidence_tier=_engine.score(structured),
-                    layer=assign_layer(structured.evidence_type),
-                    publication_year=record.get("publication_year"),
-                )
-                for record, structured in zip(records, structured_results)
-            ]
-
-            # AGENT-CTX: Edge computation runs AFTER all items are built so that
-            # compute_all_edges() has access to both EvidenceItem.layer (graph metadata,
-            # needed for adjacency comparisons) and StructuredEvidence fields (intervention,
-            # key_claim, etc.). The two lists are parallel: same index = same paper.
-            #
-            # AGENT-CTX: compute_all_edges() never raises — all failures return [].
-            # A job that produces 0 edges is still marked complete (not failed).
-            # The frontend renders the graph without connection lines in that case.
-            #
-            # AGENT-CTX: structured_results is a tuple from asyncio.gather — convert
-            # to list for compute_all_edges() which expects list[StructuredEvidence].
-            edges = await compute_all_edges(results, list(structured_results))
-
-            await set_job_complete(
-                db, job_id, SearchResponse(query=query, results=results, edges=edges)
-            )
+            if not await set_job_complete(db, job_id, response):
+                logger.warning("set_job_complete skipped for job %s — already in terminal state", job_id)
 
         except asyncio.CancelledError:
-            # AGENT-CTX: CancelledError is BaseException, not Exception — the broad
-            # except below never catches it. ARQ raises this when job_timeout (300s)
-            # is exceeded. We must mark the job failed in SQLite before re-raising
-            # so the frontend can surface a readable error instead of polling forever.
-            # Re-raise is mandatory: ARQ needs the cancellation to propagate so it
-            # can clean up its own bookkeeping for this job.
+            # AGENT-CTX: CancelledError is BaseException — the broad except below never
+            # catches it. ARQ raises this when job_timeout is exceeded. Mark failed before
+            # re-raising so the frontend surfaces a readable error instead of polling forever.
+            # Re-raise is mandatory: ARQ needs the cancellation to propagate.
             await set_job_failed(
                 db, job_id,
                 "Search timed out after 900 seconds. Try a more specific query."
             )
             raise
-        except RuntimeError as e:
+        except (ValueError, RuntimeError) as e:
             await set_job_failed(db, job_id, str(e))
         except Exception as e:  # noqa: BLE001
             # AGENT-CTX: Broad catch ensures the worker process never crashes on an
@@ -207,6 +143,7 @@ async def startup(ctx: dict) -> None:
     AGENT-CTX: The Ollama probe is skipped entirely for non-Ollama providers.
     For Groq, extraction_concurrency=10 from the registry is used directly.
     """
+    setup_logging()
     await init_db()
 
     config = get_provider_config()

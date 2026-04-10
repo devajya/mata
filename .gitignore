@@ -25,6 +25,9 @@ htmlcov/
 *.db-wal
 *.db-shm
 
+# Log files (generated at runtime, rotated automatically)
+logs/
+
 # Node / Next.js
 node_modules/
 .next/

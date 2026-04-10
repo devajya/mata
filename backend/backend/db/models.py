@@ -58,7 +58,9 @@ class JobSubmitRequest(BaseModel):
     """Request body for POST /jobs."""
     # AGENT-CTX: min_length=1 mirrors the GET /search?query= constraint.
     # Empty queries must never enter the job queue.
-    query: str = Field(..., min_length=1)
+    query: str = Field(..., min_length=1, max_length=500)
+
+    model_config = {"str_strip_whitespace": True}
 
 
 class JobSubmitResponse(BaseModel):

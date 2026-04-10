@@ -20,7 +20,6 @@ AGENT-CTX: CHAIN_LAYER_ORDER deliberately excludes -1. Reviews are attached to
 ChainMeta.review and used for temporal gray-out, not rendered as graph nodes.
 """
 
-from backend.models import EvidenceType
 
 EVIDENCE_TYPE_TO_LAYER: dict[str, int] = {
     "in vitro":       0,

@@ -2,11 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { JobStatusResponse } from "../types";
-
-// AGENT-CTX: API_URL is duplicated from page.tsx intentionally — hooks must not
-// import from page.tsx (would create a cycle). If the env var name changes,
-// update both locations.
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { API_URL } from "../lib/api";
 
 // AGENT-CTX: 10s interval × 60 polls = 600s total window (~10 min).
 // Sized to exceed the ARQ job_timeout (900s worst-case; typical Groq jobs finish
