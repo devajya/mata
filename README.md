@@ -22,6 +22,26 @@ The next round of infrastructure work is focused on three things:
 
 ---
 
+## Demonstration
+
+**Search and async job pipeline** — query submitted, job history sidebar tracks pending/complete/failed states in real time.
+
+![Search form with job history sidebar](imgs/first.png)
+
+**Evidence chain graph** — nodes positioned by layer (In Vitro → Human Genetics → Clinical Trial), gap node rendered for Animal Model, edges classified by relationship type. Chain panel shows the associated review and the gray-out year threshold.
+
+![Evidence chain graph with chain panel](imgs/second.png)
+
+**Node detail drawer** — clicking a node opens a slide-out panel with the full abstract, evidence type, effect direction, confidence tier, and a direct link to the PubMed source.
+
+![Node detail drawer with abstract and metadata](imgs/third.png)
+
+**Edge type legend** — 10 relationship types (Supports, Contradicts, Translates, Fails to Translate, etc.) each with a distinct colour and dash pattern, visible in the bottom-right corner.
+
+![Full graph view with edge type legend](imgs/fourth.png)
+
+---
+
 ## How it works
 
 ```
@@ -189,26 +209,6 @@ make kill-dev          # frees :8000 and :3000
 | Database | SQLite (WAL mode) |
 | Deployment | Render (backend + worker), Vercel (frontend) |
 | Testing | pytest, pytest-asyncio, Jest |
-
----
-
-## Demonstration
-
-**Search and async job pipeline** — query submitted, job history sidebar tracks pending/complete/failed states in real time.
-
-![Search form with job history sidebar](imgs/first.png)
-
-**Evidence chain graph** — nodes positioned by layer (In Vitro → Human Genetics → Clinical Trial), gap node rendered for Animal Model, edges classified by relationship type. Chain panel shows the associated review and the gray-out year threshold.
-
-![Evidence chain graph with chain panel](imgs/second.png)
-
-**Node detail drawer** — clicking a node opens a slide-out panel with the full abstract, evidence type, effect direction, confidence tier, and a direct link to the PubMed source.
-
-![Node detail drawer with abstract and metadata](imgs/third.png)
-
-**Edge type legend** — 10 relationship types (Supports, Contradicts, Translates, Fails to Translate, etc.) each with a distinct colour and dash pattern, visible in the bottom-right corner.
-
-![Full graph view with edge type legend](imgs/fourth.png)
 
 ---
 
