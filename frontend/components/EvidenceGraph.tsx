@@ -13,7 +13,8 @@ import {
 } from "@xyflow/react";
 
 import { ChainMeta, EdgeResult, EvidenceItem, GraphNodeData } from "../types";
-import { applyGrayOut, buildGraphData, CHAIN_LAYER_ORDER, GraphEdge, GraphNode, LAYER_NAMES } from "../lib/graphUtils";
+import { applyGrayOut, buildGraphData, GraphEdge, GraphNode } from "../lib/graphUtils";
+import { useAppMeta } from "../hooks/useAppMeta";
 import { ChainControls }      from "./ChainControls";
 import { ChainPanel }         from "./ChainPanel";
 import { NodeDrawer }         from "./NodeDrawer";
@@ -71,9 +72,11 @@ interface Props {
 }
 
 export function EvidenceGraph({ items, edges, query }: Props) {
+  const appMeta = useAppMeta();
+
   // ── Build initial graph data from items + pre-computed edges ─────────────
   const { nodes: initialNodes, edges: initialEdges, chains: initialChains } =
-    useMemo(() => buildGraphData(items, edges, query), [items, edges, query]);
+    useMemo(() => buildGraphData(items, edges, query, appMeta), [items, edges, query]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState<RFNode>(asRFNodes(initialNodes));
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState<RFEdge>(asRFEdges(initialEdges));
@@ -176,8 +179,8 @@ export function EvidenceGraph({ items, edges, query }: Props) {
   // ── Gap layer legend (outside canvas) ────────────────────────────────────
   const gapLayers = useMemo(() => {
     const presentLayers = new Set(items.map((i) => i.layer));
-    return CHAIN_LAYER_ORDER.filter((l) => !presentLayers.has(l));
-  }, [items]);
+    return appMeta.chainLayerOrder.filter((l) => !presentLayers.has(l));
+  }, [items, appMeta.chainLayerOrder]);
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
@@ -226,7 +229,7 @@ export function EvidenceGraph({ items, edges, query }: Props) {
             zIndex:          5,
           }}
         >
-          Gap layers: {gapLayers.map((l) => LAYER_NAMES[l]).join(", ")}
+          Gap layers: {gapLayers.map((l) => appMeta.layerNames[l]).join(", ")}
         </div>
       )}
 

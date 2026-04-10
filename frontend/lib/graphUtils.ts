@@ -86,15 +86,23 @@ export interface GraphEdge {
 // AGENT-CTX: edgeResults is the second param (not third) to keep items/edges
 // together — they are co-produced by the same worker job. query is last because
 // it is only used for the root node label and is semantically separate.
+//
+// meta is optional — defaults to the module-level constants. Pass the result of
+// useAppMeta() in EvidenceGraph.tsx to use the backend's authoritative values.
+// Callers that omit meta (e.g. tests) continue to work with the local defaults.
 export function buildGraphData(
   items: EvidenceItem[],
   edgeResults: EdgeResult[],
   query: string,
+  meta?: { layerNames?: Record<number, string>; chainLayerOrder?: number[] },
 ): { nodes: GraphNode[]; edges: GraphEdge[]; chains: ChainMeta[] } {
+  const resolvedLayerNames    = meta?.layerNames    ?? LAYER_NAMES;
+  const resolvedLayerOrder    = meta?.chainLayerOrder ?? CHAIN_LAYER_ORDER;
+
   const reviews    = items.filter((i) => i.layer === -1);
   const chainItems = items.filter((i) => i.layer >= 0);
 
-  const nodes  = buildNodes(chainItems, query);
+  const nodes  = buildNodes(chainItems, query, resolvedLayerNames, resolvedLayerOrder);
   const edges  = buildEdges(nodes, edgeResults);
   const chains = buildChains(nodes, edges, reviews);
   assignPositions(nodes);
@@ -104,7 +112,12 @@ export function buildGraphData(
 
 // ── Node builders ─────────────────────────────────────────────────────────────
 
-function buildNodes(chainItems: EvidenceItem[], query: string): GraphNode[] {
+function buildNodes(
+  chainItems: EvidenceItem[],
+  query: string,
+  layerNames: Record<number, string>,
+  chainLayerOrder: number[],
+): GraphNode[] {
   const nodes: GraphNode[] = [];
 
   // Root node — the search query anchor
@@ -136,7 +149,7 @@ function buildNodes(chainItems: EvidenceItem[], query: string): GraphNode[] {
         nodeType:  "evidence",
         layer:     item.layer,
         evidence:  item,
-        layerName: LAYER_NAMES[item.layer] ?? "Unknown",
+        layerName: layerNames[item.layer] ?? "Unknown",
         chainIds:  [],   // populated by buildChains
         grayedOut: false,
       },
@@ -148,7 +161,7 @@ function buildNodes(chainItems: EvidenceItem[], query: string): GraphNode[] {
   // and are never owned by a chain. EvidenceGraph.tsx renders them regardless
   // of which chain is active.
   const presentLayers = new Set(chainItems.map((i) => i.layer));
-  for (const layer of CHAIN_LAYER_ORDER) {
+  for (const layer of chainLayerOrder) {
     if (!presentLayers.has(layer)) {
       nodes.push({
         id:       `gap-${layer}`,
@@ -158,7 +171,7 @@ function buildNodes(chainItems: EvidenceItem[], query: string): GraphNode[] {
           nodeType:  "gap",
           layer,
           evidence:  null,
-          layerName: LAYER_NAMES[layer] ?? "Unknown",
+          layerName: layerNames[layer] ?? "Unknown",
           chainIds:  [],
           grayedOut: false,
         },

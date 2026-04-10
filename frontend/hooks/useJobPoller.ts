@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { JobStatusResponse } from "../types";
-import { API_URL } from "../lib/api";
+import { fetchJob } from "../lib/api";
 
 // AGENT-CTX: 10s interval × 60 polls = 600s total window (~10 min).
 // Sized to exceed the ARQ job_timeout (900s worst-case; typical Groq jobs finish
@@ -51,6 +51,7 @@ export function useJobPoller(jobId: string | null): {
 
     let cancelled = false;
     let pollCount = 0;
+    const resolvedJobId = jobId; // narrow string | null → string for TypeScript
     setIsPolling(true);
 
     async function poll(): Promise<void> {
@@ -71,23 +72,21 @@ export function useJobPoller(jobId: string | null): {
       }
 
       try {
-        const res = await fetch(`${API_URL}/job/${jobId}`);
+        const data = await fetchJob(resolvedJobId);
         if (cancelled) return;
-        if (!res.ok) {
-          // Non-200 (e.g. 404) — stop polling rather than looping on a broken id.
+        if (data === null) {
+          // 404 — job not found; stop polling (expired or invalid job ID).
           setIsPolling(false);
           return;
         }
-        const data: JobStatusResponse = await res.json();
-        if (cancelled) return;
         setJob(data);
         if (data.status === "complete" || data.status === "failed") {
-          // AGENT-CTX: Terminal states — no further polls needed.
+          // Terminal states — no further polls needed.
           setIsPolling(false);
           return;
         }
       } catch {
-        // Network failure — swallow and retry on next interval.
+        // Network or server error — swallow and retry on next interval.
       }
       if (!cancelled) {
         timeoutRef.current = setTimeout(poll, POLL_INTERVAL_MS);
