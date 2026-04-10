@@ -51,6 +51,7 @@ export function useJobPoller(jobId: string | null): {
 
     let cancelled = false;
     let pollCount = 0;
+    const resolvedJobId = jobId; // narrow string | null → string for TypeScript
     setIsPolling(true);
 
     async function poll(): Promise<void> {
@@ -71,7 +72,7 @@ export function useJobPoller(jobId: string | null): {
       }
 
       try {
-        const data = await fetchJob(jobId);
+        const data = await fetchJob(resolvedJobId);
         if (cancelled) return;
         if (data === null) {
           // 404 — job not found; stop polling (expired or invalid job ID).
