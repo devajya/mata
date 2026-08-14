@@ -1,6 +1,7 @@
 # MATA — Drug Target Evidence Aggregator
 
 MATA helps biopharma researchers assess the evidence chain for a drug target. Enter a target (e.g. "KRAS G12C") and MATA fetches PubMed abstracts, classifies each by study type and effect direction using an LLM, then renders the evidence as an interactive graph — showing where the evidence chain is strong, where it's weak, and where evidence is absent.
+
 ---
 
 ## Current State and Active Constraints
